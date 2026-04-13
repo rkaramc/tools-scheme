@@ -10,6 +10,7 @@ use lsp_types::{
 use serde_json::json;
 use std::collections::HashMap;
 use std::error::Error;
+use std::path::PathBuf;
 
 mod evaluator;
 use evaluator::{EvalResult, Evaluator};
@@ -21,6 +22,23 @@ struct Server {
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let (connection, io_threads) = Connection::stdio();
+
+    // Parse arguments to find the shim path
+    let args: Vec<String> = std::env::args().collect();
+    let shim_path = if let Some(path_arg) = args.get(1) {
+        PathBuf::from(path_arg)
+    } else {
+        // Fallback: look for eval-shim.rkt in the same directory as the executable
+        let mut path = std::env::current_exe()?;
+        path.pop();
+        path.push("eval-shim.rkt");
+        if !path.exists() {
+            // Second fallback: dev path
+            std::env::current_dir()?.join("lsp/src/eval-shim.rkt")
+        } else {
+            path
+        }
+    };
 
     let server_capabilities = serde_json::to_value(ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
@@ -39,7 +57,6 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
     let _initialization_params = connection.initialize(server_capabilities)?;
 
-    let shim_path = std::env::current_dir()?.join("lsp/src/eval-shim.rkt");
     let mut server = Server {
         evaluator: Evaluator::new(shim_path),
         results: HashMap::new(),
@@ -82,7 +99,7 @@ impl Server {
     fn handle_code_action(&self, connection: &Connection, id: RequestId, params: CodeActionParams) -> Result<(), Box<dyn Error + Sync + Send>> {
         let uri = params.text_document.uri.to_string();
         let cmd = Command {
-            title: "Evaluate Scheme File".to_string(),
+            title: "Scheme Toolbox: Evaluate File".to_string(),
             command: "scheme.evaluate".to_string(),
             arguments: Some(vec![json!(uri)]),
         };

@@ -1,0 +1,83 @@
+{
+    "name": "tools-scheme",
+    "displayName": "Tools for Scheme/Racket",
+    "description": "Language support for Scheme and Racket, including evaluation with inlay hints.",
+    "version": "0.1.0",
+    "publisher": "rkaramc",
+    "engines": {
+        "vscode": "^1.75.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "activationEvents": [
+        "onLanguage:racket",
+        "onLanguage:scheme"
+    ],
+    "main": "./out/extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "scheme.evaluate",
+                "title": "Evaluate Scheme File",
+                "icon": "$(play)"
+            }
+        ],
+        "menus": {
+            "editor/title": [
+                {
+                    "command": "scheme.evaluate",
+                    "group": "navigation",
+                    "when": "editorLangId == racket || editorLangId == scheme"
+                }
+            ],
+            "editor/context": [
+                {
+                    "command": "scheme.evaluate",
+                    "group": "navigation",
+                    "when": "editorLangId == racket || editorLangId == scheme"
+                }
+            ]
+        },
+        "languages": [
+            {
+                "id": "racket",
+                "extensions": [
+                    ".rkt"
+                ],
+                "aliases": [
+                    "Racket"
+                ]
+            },
+            {
+                "id": "scheme",
+                "extensions": [
+                    ".scm",
+                    ".ss"
+                ],
+                "aliases": [
+                    "Scheme"
+                ]
+            }
+        ]
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "pretest": "npm run compile && npm run lint",
+        "lint": "eslint src --ext ts",
+        "test": "node ./out/test/runTest.js"
+    },
+    "devDependencies": {
+        "@types/vscode": "^1.75.0",
+        "@types/node": "16.x",
+        "typescript": "^4.9.5",
+        "eslint": "^8.34.0",
+        "@typescript-eslint/parser": "^5.53.0",
+        "@typescript-eslint/eslint-plugin": "^5.53.0"
+    },
+    "dependencies": {
+        "vscode-languageclient": "^8.1.0"
+    }
+}
