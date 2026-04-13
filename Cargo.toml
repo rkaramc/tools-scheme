@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "lsp"
+]
+exclude = [
+    "editors/zed"
+]
+resolver = "2"
