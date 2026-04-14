@@ -1,6 +1,9 @@
 use lsp_server::{Connection, Message, Request, RequestId, Response};
 use lsp_types::{
-    notification::{Notification, PublishDiagnostics},
+    notification::{
+        DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification,
+        PublishDiagnostics,
+    },
     request::{CodeActionRequest, ExecuteCommand, InlayHintRequest},
     CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams, Command,
     Diagnostic, DiagnosticSeverity, InlayHint, InlayHintKind, InlayHintLabel, InlayHintParams,
@@ -18,6 +21,7 @@ use evaluator::{EvalResult, Evaluator};
 struct Server {
     evaluator: Evaluator,
     results: HashMap<String, Vec<EvalResult>>,
+    documents: HashMap<String, String>,
 }
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
@@ -70,6 +74,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut server = Server {
         evaluator: Evaluator::new(shim_path),
         results: HashMap::new(),
+        documents: HashMap::new(),
     };
 
     server.main_loop(&connection)?;
@@ -89,7 +94,9 @@ impl Server {
                     self.handle_request(connection, req)?;
                 }
                 Message::Response(_resp) => {}
-                Message::Notification(_not) => {}
+                Message::Notification(not) => {
+                    self.handle_notification(not)?;
+                }
             }
         }
         Ok(())
@@ -102,6 +109,21 @@ impl Server {
             self.handle_execute_command(connection, req.id, params)?;
         } else if let Some(params) = cast_request::<InlayHintRequest>(&req) {
             self.handle_inlay_hints(connection, req.id, params)?;
+        }
+        Ok(())
+    }
+
+    fn handle_notification(&mut self, not: lsp_server::Notification) -> Result<(), Box<dyn Error + Sync + Send>> {
+        if let Some(params) = cast_notification::<DidOpenTextDocument>(&not) {
+            self.documents.insert(params.text_document.uri.to_string(), params.text_document.text);
+        } else if let Some(params) = cast_notification::<DidChangeTextDocument>(&not) {
+            if let Some(change) = params.content_changes.into_iter().last() {
+                self.documents.insert(params.text_document.uri.to_string(), change.text);
+            }
+        } else if let Some(params) = cast_notification::<DidCloseTextDocument>(&not) {
+            let uri = params.text_document.uri.to_string();
+            self.documents.remove(&uri);
+            self.results.remove(&uri);
         }
         Ok(())
     }
@@ -124,49 +146,56 @@ impl Server {
             if let Some(arg) = params.arguments.get(0) {
                 if let Some(uri_str) = arg.as_str() {
                     let uri = lsp_types::Url::parse(uri_str)?;
-                    if let Ok(path) = uri.to_file_path() {
-                        if let Ok(eval_results) = self.evaluator.evaluate(&path) {
-                            self.results.insert(uri_str.to_string(), eval_results.clone());
-                            
-                            // Publish diagnostics for errors
-                            let mut diagnostics = Vec::new();
-                            for res in &eval_results {
-                                if res.is_error {
-                                    diagnostics.push(Diagnostic {
-                                        range: Range::new(
-                                            Position::new(res.line - 1, res.col),
-                                            Position::new(res.line - 1, 999),
-                                        ),
-                                        severity: Some(DiagnosticSeverity::ERROR),
-                                        message: res.result.clone(),
-                                        ..Default::default()
-                                    });
-                                }
+                    
+                    let eval_results = if let Some(content) = self.documents.get(uri_str) {
+                        self.evaluator.evaluate_str(content)
+                    } else if let Ok(path) = uri.to_file_path() {
+                        self.evaluator.evaluate(&path)
+                    } else {
+                        Err(anyhow::anyhow!("Could not find file or buffer content"))
+                    };
+
+                    if let Ok(eval_results) = eval_results {
+                        self.results.insert(uri_str.to_string(), eval_results.clone());
+                        
+                        // Publish diagnostics for errors
+                        let mut diagnostics = Vec::new();
+                        for res in &eval_results {
+                            if res.is_error {
+                                diagnostics.push(Diagnostic {
+                                    range: Range::new(
+                                        Position::new(res.line - 1, res.col),
+                                        Position::new(res.line - 1, 999),
+                                    ),
+                                    severity: Some(DiagnosticSeverity::ERROR),
+                                    message: res.result.clone(),
+                                    ..Default::default()
+                                });
                             }
-                            let params = PublishDiagnosticsParams {
-                                uri: uri.clone(),
-                                diagnostics,
-                                version: None,
-                            };
-                            let not = lsp_server::Notification::new(
-                                PublishDiagnostics::METHOD.to_string(),
-                                params,
-                            );
-                            connection.sender.send(Message::Notification(not))?;
-
-                            // Send a request to refresh inlay hints
-                            let refresh_req = Request::new(
-                                RequestId::from(999),
-                                "workspace/inlayHint/refresh".to_string(),
-                                json!(null),
-                            );
-                            connection.sender.send(Message::Request(refresh_req))?;
-
-                            // Return the evaluation results
-                            let resp = Response::new_ok(id, json!(eval_results));
-                            connection.sender.send(Message::Response(resp))?;
-                            return Ok(());
                         }
+                        let params = PublishDiagnosticsParams {
+                            uri: uri.clone(),
+                            diagnostics,
+                            version: None,
+                        };
+                        let not = lsp_server::Notification::new(
+                            PublishDiagnostics::METHOD.to_string(),
+                            params,
+                        );
+                        connection.sender.send(Message::Notification(not))?;
+
+                        // Send a request to refresh inlay hints
+                        let refresh_req = Request::new(
+                            RequestId::from(999),
+                            "workspace/inlayHint/refresh".to_string(),
+                            json!(null),
+                        );
+                        connection.sender.send(Message::Request(refresh_req))?;
+
+                        // Return the evaluation results
+                        let resp = Response::new_ok(id, json!(eval_results));
+                        connection.sender.send(Message::Response(resp))?;
+                        return Ok(());
                     }
                 }
             }
@@ -222,6 +251,18 @@ where
 {
     if req.method == R::METHOD {
         serde_json::from_value(req.params.clone()).ok()
+    } else {
+        None
+    }
+}
+
+fn cast_notification<N>(not: &lsp_server::Notification) -> Option<N::Params>
+where
+    N: lsp_types::notification::Notification,
+    N::Params: serde::de::DeserializeOwned,
+{
+    if not.method == N::METHOD {
+        serde_json::from_value(not.params.clone()).ok()
     } else {
         None
     }
