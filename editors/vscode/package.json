@@ -18,7 +18,7 @@
     "contributes": {
         "commands": [
             {
-                "command": "scheme.evaluate",
+                "command": "scheme.runEvaluation",
                 "title": "Evaluate Scheme File",
                 "icon": "$(play)"
             }
@@ -26,14 +26,14 @@
         "menus": {
             "editor/title": [
                 {
-                    "command": "scheme.evaluate",
+                    "command": "scheme.runEvaluation",
                     "group": "navigation",
                     "when": "editorLangId == racket || editorLangId == scheme"
                 }
             ],
             "editor/context": [
                 {
-                    "command": "scheme.evaluate",
+                    "command": "scheme.runEvaluation",
                     "group": "navigation",
                     "when": "editorLangId == racket || editorLangId == scheme"
                 }
@@ -70,12 +70,13 @@
         "test": "node ./out/test/runTest.js"
     },
     "devDependencies": {
-        "@types/vscode": "^1.75.0",
         "@types/node": "16.x",
-        "typescript": "^4.9.5",
-        "eslint": "^8.34.0",
+        "@types/vscode": "^1.75.0",
+        "@typescript-eslint/eslint-plugin": "^5.53.0",
         "@typescript-eslint/parser": "^5.53.0",
-        "@typescript-eslint/eslint-plugin": "^5.53.0"
+        "@vscode/vsce": "^3.7.1",
+        "eslint": "^8.34.0",
+        "typescript": "^4.9.5"
     },
     "dependencies": {
         "vscode-languageclient": "^8.1.0"

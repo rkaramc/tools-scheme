@@ -13,11 +13,9 @@ export function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel('Scheme Toolbox');
     outputChannel.appendLine('Activating Scheme Toolbox extension...');
 
-    // Determine the path to the LSP binary relative to the extension's root
+    // Determine the path to the LSP binary
     const serverPath = path.resolve(
-        context.extensionPath,
-        '..',
-        '..',
+        'd:\\source\\tools-scheme',
         'target',
         'debug',
         process.platform === 'win32' ? 'scheme-toolbox-lsp.exe' : 'scheme-toolbox-lsp'
@@ -25,9 +23,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Determine the path to the Racket shim
     const shimPath = path.resolve(
-        context.extensionPath,
-        '..',
-        '..',
+        'd:\\source\\tools-scheme',
         'lsp',
         'src',
         'eval-shim.rkt'
@@ -60,7 +56,7 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     // Register the custom command that delegates to the LSP
-    const evaluateCommand = vscode.commands.registerCommand('scheme.evaluate', async (uriOrArgs: any) => {
+    const evaluateCommand = vscode.commands.registerCommand('scheme.runEvaluation', async (uriOrArgs: any) => {
         outputChannel.appendLine(`Triggering evaluation for: ${JSON.stringify(uriOrArgs)}`);
         
         let uri: string;
