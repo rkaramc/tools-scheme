@@ -6,17 +6,14 @@
 (define real-stdout (current-output-port))
 
 (define (evaluate-file path)
-  (define-values (port-orig) (open-input-file path))
-  (port-count-lines! port-orig)
-  (define first-line (read-line port-orig))
   (define port
-    (if (and (string? first-line) (string-prefix? first-line "#lang"))
-        port-orig
-        (begin
-          (close-input-port port-orig)
-          (let ([p (open-input-file path)])
-            (port-count-lines! p)
-            p))))
+    (if (string=? path "-")
+        (current-input-port)
+        (let ([p (open-input-file path)])
+          (port-count-lines! p)
+          p)))
+  
+  (port-count-lines! port)
 
   (parameterize ([current-namespace (make-base-namespace)]
                  [read-accept-reader #t]
