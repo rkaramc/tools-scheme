@@ -33,9 +33,9 @@ lsp/src/
    - LSP identifies top-level S-expressions in the source.
    - LSP maps the captured results from Racket back to the line numbers of these expressions.
 4. **Display**:
-   - Results are sent via `textDocument/inlayHint`.
-   - If an error occurs, the message is displayed as an inlay hint at the failing line.
-   - If Racket provides line/column info for an error, a `Diagnostic` is also published.
+   - Successful evaluation results are sent via `textDocument/inlayHint` at the end of the corresponding expression.
+   - Evaluation errors are published as `Diagnostic` objects (red-underline). Error diagnostics are considered superior to inlay hints for feedback on failing expressions, as they integrate with the editor's error list and provide standard visual cues.
+   - Inlay hints are suppressed for expressions that produce errors to avoid visual clutter and redundant feedback.
 
 ## Code Style (Rust)
 ```rust
@@ -70,7 +70,7 @@ match result {
 ## Success Criteria
 - [x] LSP identifies top-level expressions in a `.rkt` or `.scm` file.
 - [x] User can trigger evaluation via an editor action.
-- [x] Evaluation results appear as inlay hints at the end of the corresponding lines.
+- [x] Successful evaluation results appear as inlay hints at the end of the lines.
 - [x] State is persistent (definitions are available to subsequent expressions).
-- [x] Errors are displayed as inlay hints at minimum.
-- [x] Errors with location info generate red-underline diagnostics.
+- [x] Evaluation errors generate red-underline diagnostics.
+- [x] Inlay hints are hidden for expressions that contain evaluation errors.
