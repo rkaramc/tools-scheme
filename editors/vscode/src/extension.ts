@@ -73,10 +73,10 @@ export function activate(context: vscode.ExtensionContext) {
         },
         outputChannel: outputChannel,
         middleware: {
-            provideInlayHints: async (document, range, token, next) => {
-                outputChannel.appendLine(`[InlayHints] Requesting hints for ${document.uri.toString()} over range: ${JSON.stringify(range)}`);
-                const result = await next(document, range, token);
-                outputChannel.appendLine(`[InlayHints] Received hints: ${JSON.stringify(result, null, 2)}`);
+            provideInlineValues: async (document, viewPort, context, token, next) => {
+                outputChannel.appendLine(`[InlineValues] Requesting values for ${document.uri.toString()}`);
+                const result = await next(document, viewPort, context, token);
+                outputChannel.appendLine(`[InlineValues] Received values: ${JSON.stringify(result, null, 2)}`);
                 return result;
             }
         }
