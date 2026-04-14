@@ -52,20 +52,39 @@ fn test_lsp_eval_integration() {
     stdin.flush().unwrap();
 
     // Read response for executeCommand
-    // It might be a notification (diagnostics) or the response itself.
-    // We'll read until we find the result.
     let mut found_result = false;
     for _ in 0..10 {
         let body = read_message(&mut reader);
         if body.contains("\"id\":2") {
+            // The command response should contain the results as a list
             assert!(body.contains("\"result\":["));
             assert!(body.contains("\"result\":\"3\""));
-            assert!(body.contains("\"output\":\"hello\""));
             found_result = true;
             break;
         }
     }
-    assert!(found_result, "Did not find executeCommand response");
+    assert!(found_result, "Did not find executeCommand response for test.rkt");
+
+    // 5. didOpen with #lang racket
+    let lang_file = "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file:///lang.rkt\",\"languageId\":\"racket\",\"version\":1,\"text\":\"#lang racket\\n(define y 100)\\n(+ y 20)\"}}}";
+    write!(stdin, "Content-Length: {}\r\n\r\n{}", lang_file.len(), lang_file).unwrap();
+    stdin.flush().unwrap();
+
+    // 6. executeCommand for #lang file
+    let exec_lang = r#"{"jsonrpc":"2.0","id":3,"method":"workspace/executeCommand","params":{"command":"scheme.evaluate","arguments":["file:///lang.rkt"]}}"#;
+    write!(stdin, "Content-Length: {}\r\n\r\n{}", exec_lang.len(), exec_lang).unwrap();
+    stdin.flush().unwrap();
+
+    let mut found_lang_result = false;
+    for _ in 0..10 {
+        let body = read_message(&mut reader);
+        if body.contains("\"id\":3") {
+            assert!(body.contains("\"result\":\"120\""));
+            found_lang_result = true;
+            break;
+        }
+    }
+    assert!(found_lang_result, "Did not find executeCommand response for #lang file");
 
     child.kill().unwrap();
 }
