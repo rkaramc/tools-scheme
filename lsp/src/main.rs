@@ -15,10 +15,12 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::PathBuf;
 
+mod documents;
 mod evaluator;
 mod inlay_hints;
 mod parser;
 
+use documents::DocumentStore;
 use evaluator::{EvalResult, Evaluator};
 use parser::Parser;
 
@@ -26,14 +28,10 @@ struct Server {
     evaluator: Evaluator,
     _parser: Parser,
     results: HashMap<String, Vec<EvalResult>>,
-    documents: HashMap<String, String>,
+    document_store: DocumentStore,
 }
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .init();
-
     let (connection, io_threads) = Connection::stdio();
 
     // Parse arguments to find the shim path
@@ -84,7 +82,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         evaluator: Evaluator::new(shim_path),
         _parser: Parser::new(),
         results: HashMap::new(),
-        documents: HashMap::new(),
+        document_store: DocumentStore::new(),
     };
 
     server.main_loop(&connection)?;
@@ -125,14 +123,16 @@ impl Server {
 
     fn handle_notification(&mut self, not: lsp_server::Notification) -> Result<(), Box<dyn Error + Sync + Send>> {
         if let Some(params) = cast_notification::<DidOpenTextDocument>(&not) {
-            self.documents.insert(params.text_document.uri.to_string(), params.text_document.text);
+            self.document_store.open(params.text_document);
         } else if let Some(params) = cast_notification::<DidChangeTextDocument>(&not) {
-            if let Some(change) = params.content_changes.into_iter().last() {
-                self.documents.insert(params.text_document.uri.to_string(), change.text);
-            }
+            self.document_store.change(
+                &params.text_document.uri.to_string(),
+                params.text_document.version,
+                params.content_changes,
+            );
         } else if let Some(params) = cast_notification::<DidCloseTextDocument>(&not) {
             let uri = params.text_document.uri.to_string();
-            self.documents.remove(&uri);
+            self.document_store.close(&uri);
             self.results.remove(&uri);
         }
         Ok(())
@@ -157,8 +157,8 @@ impl Server {
                 if let Some(uri_str) = arg.as_str() {
                     let uri = lsp_types::Url::parse(uri_str)?;
                     
-                    let eval_results = if let Some(content) = self.documents.get(uri_str) {
-                        self.evaluator.evaluate_str(content)
+                    let eval_results = if let Some(doc) = self.document_store.get(uri_str) {
+                        self.evaluator.evaluate_str(&doc.text)
                     } else if let Ok(path) = uri.to_file_path() {
                         self.evaluator.evaluate(&path)
                     } else {
