@@ -30,6 +30,10 @@ struct Server {
 }
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .init();
+
     let (connection, io_threads) = Connection::stdio();
 
     // Parse arguments to find the shim path
@@ -164,7 +168,6 @@ impl Server {
                     if let Ok(eval_results) = eval_results {
                         self.results.insert(uri_str.to_string(), eval_results.clone());
                         
-                        // Publish diagnostics for errors
                         let mut diagnostics = Vec::new();
                         for res in &eval_results {
                             if res.is_error {

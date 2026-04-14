@@ -2,24 +2,25 @@
 
 (require json racket/exn)
 
-;; The shim takes a filename as a command-line argument.
 (define real-stdout (current-output-port))
 
 (define (evaluate-file path)
-  (define port
+  (define target-path
     (if (string=? path "-")
-        (current-input-port)
-        (let ([p (open-input-file path)])
-          (port-count-lines! p)
-          p)))
-  
-  (port-count-lines! port)
+        (let ([tmp (make-temporary-file "eval-shim-~a.rkt")])
+          (with-output-to-file tmp #:exists 'replace
+            (lambda () (copy-port (current-input-port) (current-output-port))))
+          tmp)
+        path))
 
-  (parameterize ([current-namespace (make-base-namespace)]
-                 [read-accept-reader #t]
-                 [read-accept-lang #t])
+  (define port (open-input-file target-path))
+  (port-count-lines! port)
+  
+  (parameterize ([read-accept-reader #t]
+                 [read-accept-lang #t]
+                 [current-namespace (make-base-namespace)])
     (let loop ()
-      (define stx (read-syntax path port))
+      (define stx (read-syntax target-path port))
       (unless (eof-object? stx)
         (with-handlers ([exn:fail? (lambda (e) 
                                      (display-result (syntax-line stx) 
@@ -27,26 +28,45 @@
                                                      (syntax-span stx)
                                                      e #t "")
                                      (loop))])
-          ;; Capture per-expression stdout
-          (define capture-port (open-output-string))
-          (define result
-            (parameterize ([current-output-port capture-port])
-              (eval stx)))
-          (define captured (get-output-string capture-port))
-          (cond
-            ;; Non-void result: emit result + any captured output
-            [(not (void? result))
-             (display-result (syntax-line stx) 
-                             (syntax-column stx)
-                             (syntax-span stx)
-                             result #f captured)]
-            ;; Void result but produced output: emit with "void" result
-            [(not (string=? captured ""))
-             (display-result (syntax-line stx) 
-                             (syntax-column stx)
-                             (syntax-span stx)
-                             'void #f captured)])
-          (loop))))))
+          
+          (define expanded (expand stx))
+          (syntax-case expanded (module)
+            [(module name lang (mb . body))
+             (let ([m-name (syntax-e #'name)])
+               (eval expanded)
+               (dynamic-require `(quote ,m-name) #f)
+               (define ns (module->namespace `(quote ,m-name)))
+               (for ([form (syntax->list #'body)])
+                 (evaluate-single-form form ns)))]
+            [_ 
+             (evaluate-single-form stx (current-namespace))])
+          (loop)))))
+  
+  (when (string=? path "-") (delete-file target-path)))
+
+(define (evaluate-single-form stx ns)
+  (with-handlers ([exn:fail? (lambda (e) 
+                               (display-result (syntax-line stx) 
+                                               (syntax-column stx)
+                                               (syntax-span stx)
+                                               e #t ""))])
+    (define capture-port (open-output-string))
+    (define result
+      (parameterize ([current-output-port capture-port]
+                     [current-namespace ns])
+        (eval stx)))
+    (define captured (get-output-string capture-port))
+    (cond
+      [(not (void? result))
+       (display-result (syntax-line stx) 
+                       (syntax-column stx)
+                       (syntax-span stx)
+                       result #f captured)]
+      [(not (string=? captured ""))
+       (display-result (syntax-line stx) 
+                       (syntax-column stx)
+                       (syntax-span stx)
+                       'void #f captured)])))
 
 (define (display-result line col span val is-error output)
   (define end-col (+ (or col 0) (or span 0)))
