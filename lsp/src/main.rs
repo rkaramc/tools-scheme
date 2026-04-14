@@ -6,7 +6,7 @@ use lsp_types::{
     },
     request::{CodeActionRequest, ExecuteCommand, InlayHintRequest},
     CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams, Command,
-    Diagnostic, DiagnosticSeverity, InlayHint, InlayHintKind, InlayHintLabel, InlayHintParams,
+    Diagnostic, DiagnosticSeverity, InlayHintParams,
     Position, PublishDiagnosticsParams, Range, ServerCapabilities, TextDocumentSyncCapability,
     TextDocumentSyncKind, WorkDoneProgressOptions,
 };
@@ -16,10 +16,15 @@ use std::error::Error;
 use std::path::PathBuf;
 
 mod evaluator;
+mod inlay_hints;
+mod parser;
+
 use evaluator::{EvalResult, Evaluator};
+use parser::Parser;
 
 struct Server {
     evaluator: Evaluator,
+    _parser: Parser,
     results: HashMap<String, Vec<EvalResult>>,
     documents: HashMap<String, String>,
 }
@@ -73,6 +78,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
     let mut server = Server {
         evaluator: Evaluator::new(shim_path),
+        _parser: Parser::new(),
         results: HashMap::new(),
         documents: HashMap::new(),
     };
@@ -210,32 +216,7 @@ impl Server {
         let mut hints = Vec::new();
 
         if let Some(results) = self.results.get(&uri) {
-            for res in results {
-                if res.is_error {
-                    continue;
-                }
-                let label = if res.output.is_empty() {
-                    format!(" => {}", res.result)
-                } else {
-                    format!(" => {} 📝", res.result)
-                };
-                let tooltip = if res.output.is_empty() {
-                    None
-                } else {
-                    Some(lsp_types::InlayHintTooltip::String(res.output.clone()))
-                };
-                let hint = InlayHint {
-                    position: Position::new(res.line - 1, res.col),
-                    label: InlayHintLabel::String(label),
-                    kind: Some(InlayHintKind::PARAMETER),
-                    text_edits: None,
-                    tooltip,
-                    padding_left: Some(true),
-                    padding_right: None,
-                    data: None,
-                };
-                hints.push(hint);
-            }
+            hints = inlay_hints::results_to_hints(results);
         }
 
         let resp = Response::new_ok(id, Some(hints));
