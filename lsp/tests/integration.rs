@@ -86,6 +86,23 @@ fn test_lsp_eval_integration() {
     }
     assert!(found_lang_result, "Did not find executeCommand response for #lang file");
 
+    // 7. inlineValue request
+    let inline_val_req = r#"{"jsonrpc":"2.0","id":4,"method":"textDocument/inlineValue","params":{"textDocument":{"uri":"file:///test.rkt"},"range":{"start":{"line":0,"character":0},"end":{"line":10,"character":0}},"context":{"frameId":0,"stoppedLocation":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}}}}}"#;
+    write!(stdin, "Content-Length: {}\r\n\r\n{}", inline_val_req.len(), inline_val_req).unwrap();
+    stdin.flush().unwrap();
+
+    let mut found_inline_val = false;
+    for _ in 0..10 {
+        let body = read_message(&mut reader);
+        if body.contains("\"id\":4") {
+            assert!(body.contains("=> 3"));
+            assert!(body.contains("=> void 📝"));
+            found_inline_val = true;
+            break;
+        }
+    }
+    assert!(found_inline_val, "Did not find inlineValue response");
+
     child.kill().unwrap();
 }
 
@@ -93,7 +110,9 @@ fn read_message<R: BufRead>(reader: &mut R) -> String {
     let mut content_length = 0;
     loop {
         let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
+        if reader.read_line(&mut line).unwrap() == 0 {
+            panic!("EOF reached while reading headers");
+        }
         if line.trim().is_empty() {
             break;
         }

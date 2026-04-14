@@ -4,9 +4,9 @@ use lsp_types::{
         DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification,
         PublishDiagnostics,
     },
-    request::{CodeActionRequest, ExecuteCommand, InlayHintRequest},
+    request::{CodeActionRequest, ExecuteCommand, InlineValueRequest},
     CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams, Command,
-    Diagnostic, DiagnosticSeverity, InlayHintParams,
+    Diagnostic, DiagnosticSeverity, InlineValue, InlineValueParams, InlineValueText,
     Position, PublishDiagnosticsParams, Range, ServerCapabilities, TextDocumentSyncCapability,
     TextDocumentSyncKind, WorkDoneProgressOptions,
 };
@@ -17,7 +17,6 @@ use std::path::PathBuf;
 
 mod documents;
 mod evaluator;
-mod inlay_hints;
 mod parser;
 
 use documents::DocumentStore;
@@ -68,7 +67,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             work_done_progress_options: WorkDoneProgressOptions::default(),
             resolve_provider: Some(false),
         })),
-        inlay_hint_provider: Some(lsp_types::OneOf::Left(true)),
+        inline_value_provider: Some(lsp_types::OneOf::Left(true)),
         execute_command_provider: Some(lsp_types::ExecuteCommandOptions {
             commands: vec!["scheme.evaluate".to_string()],
             ..Default::default()
@@ -115,8 +114,8 @@ impl Server {
             self.handle_code_action(connection, req.id, params)?;
         } else if let Some(params) = cast_request::<ExecuteCommand>(&req) {
             self.handle_execute_command(connection, req.id, params)?;
-        } else if let Some(params) = cast_request::<InlayHintRequest>(&req) {
-            self.handle_inlay_hints(connection, req.id, params)?;
+        } else if let Some(params) = cast_request::<InlineValueRequest>(&req) {
+            self.handle_inline_values(connection, req.id, params)?;
         }
         Ok(())
     }
@@ -193,10 +192,10 @@ impl Server {
                         );
                         connection.sender.send(Message::Notification(not))?;
 
-                        // Send a request to refresh inlay hints
+                        // Send a request to refresh inline values
                         let refresh_req = Request::new(
                             RequestId::from(999),
-                            "workspace/inlayHint/refresh".to_string(),
+                            "workspace/inlineValue/refresh".to_string(),
                             json!(null),
                         );
                         connection.sender.send(Message::Request(refresh_req))?;
@@ -214,15 +213,34 @@ impl Server {
         Ok(())
     }
 
-    fn handle_inlay_hints(&self, connection: &Connection, id: RequestId, params: InlayHintParams) -> Result<(), Box<dyn Error + Sync + Send>> {
+    fn handle_inline_values(&self, connection: &Connection, id: RequestId, params: InlineValueParams) -> Result<(), Box<dyn Error + Sync + Send>> {
         let uri = params.text_document.uri.to_string();
-        let mut hints = Vec::new();
+        let mut values = Vec::new();
 
         if let Some(results) = self.results.get(&uri) {
-            hints = inlay_hints::results_to_hints(results);
+            for res in results {
+                if res.is_error {
+                    continue;
+                }
+                
+                let text = if res.output.is_empty() {
+                    format!(" => {}", res.result)
+                } else {
+                    format!(" => {} 📝", res.result)
+                };
+
+                let val = InlineValue::Text(InlineValueText {
+                    range: Range::new(
+                        Position::new(res.line - 1, res.col),
+                        Position::new(res.line - 1, res.col + 1),
+                    ),
+                    text,
+                });
+                values.push(val);
+            }
         }
 
-        let resp = Response::new_ok(id, Some(hints));
+        let resp = Response::new_ok(id, Some(values));
         connection.sender.send(Message::Response(resp))?;
         Ok(())
     }
@@ -234,7 +252,13 @@ where
     R::Params: serde::de::DeserializeOwned,
 {
     if req.method == R::METHOD {
-        serde_json::from_value(req.params.clone()).ok()
+        match serde_json::from_value(req.params.clone()) {
+            Ok(params) => Some(params),
+            Err(e) => {
+                tracing::error!("Failed to cast request {}: {:?}", R::METHOD, e);
+                None
+            }
+        }
     } else {
         None
     }
