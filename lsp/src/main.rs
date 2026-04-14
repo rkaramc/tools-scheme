@@ -175,12 +175,22 @@ impl Server {
                 if res.is_error {
                     continue;
                 }
+                let label = if res.output.is_empty() {
+                    format!(" => {}", res.result)
+                } else {
+                    format!(" => {} 📝", res.result)
+                };
+                let tooltip = if res.output.is_empty() {
+                    None
+                } else {
+                    Some(lsp_types::InlayHintTooltip::String(res.output.clone()))
+                };
                 let hint = InlayHint {
                     position: Position::new(res.line - 1, res.col),
-                    label: InlayHintLabel::String(format!(" => {}", res.result)),
+                    label: InlayHintLabel::String(label),
                     kind: Some(InlayHintKind::PARAMETER),
                     text_edits: None,
-                    tooltip: None,
+                    tooltip,
                     padding_left: Some(true),
                     padding_right: None,
                     data: None,

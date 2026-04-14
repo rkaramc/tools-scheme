@@ -20,8 +20,7 @@
 
   (parameterize ([current-namespace (make-base-namespace)]
                  [read-accept-reader #t]
-                 [read-accept-lang #t]
-                 [current-output-port (open-output-string)])
+                 [read-accept-lang #t])
     (let loop ()
       (define stx (read-syntax path port))
       (unless (eof-object? stx)
@@ -29,25 +28,38 @@
                                      (display-result (syntax-line stx) 
                                                      (syntax-column stx)
                                                      (syntax-span stx)
-                                                     e #t)
+                                                     e #t "")
                                      (loop))])
-          (define result (eval stx))
-          ;; We only display results for non-void expressions (like definitions)
-          (unless (void? result)
-            (display-result (syntax-line stx) 
-                            (syntax-column stx)
-                            (syntax-span stx)
-                            result #f))
+          ;; Capture per-expression stdout
+          (define capture-port (open-output-string))
+          (define result
+            (parameterize ([current-output-port capture-port])
+              (eval stx)))
+          (define captured (get-output-string capture-port))
+          (cond
+            ;; Non-void result: emit result + any captured output
+            [(not (void? result))
+             (display-result (syntax-line stx) 
+                             (syntax-column stx)
+                             (syntax-span stx)
+                             result #f captured)]
+            ;; Void result but produced output: emit with "void" result
+            [(not (string=? captured ""))
+             (display-result (syntax-line stx) 
+                             (syntax-column stx)
+                             (syntax-span stx)
+                             'void #f captured)])
           (loop))))))
 
-(define (display-result line col span val is-error)
+(define (display-result line col span val is-error output)
   (define end-col (+ (or col 0) (or span 0)))
-  (define output 
+  (define base
     (hasheq 'line (or line 1)
             'col end-col
             'result (if (exn? val) (exn-message val) (format "~a" val))
-            'is_error is-error))
-  (displayln (jsexpr->string output) real-stdout))
+            'is_error is-error
+            'output output))
+  (displayln (jsexpr->string base) real-stdout))
 
 (module+ main
   (command-line
