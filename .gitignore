@@ -30,3 +30,15 @@ Cargo.lock
 **/dist/
 **/.vscode-test/
 *.log
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+
+# Local Agent Preferences
+/.agents/local.md
+
+# Project Logs
+global.session
+
