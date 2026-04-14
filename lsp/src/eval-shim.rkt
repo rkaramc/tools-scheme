@@ -37,8 +37,8 @@
 
 (define (display-result line col val is-error)
   (define output 
-    (hasheq 'line line
-            'col col
+    (hasheq 'line (or line 1)
+            'col (or col 0)
             'result (if (exn? val) (exn-message val) (format "~a" val))
             'is_error is-error))
   (displayln (jsexpr->string output)))

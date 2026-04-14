@@ -168,7 +168,7 @@ impl Server {
         if let Some(results) = self.results.get(&uri) {
             for res in results {
                 let hint = InlayHint {
-                    position: Position::new(res.line - 1, 999),
+                    position: Position::new(res.line - 1, res.col),
                     label: InlayHintLabel::String(format!(" => {}", res.result)),
                     kind: Some(InlayHintKind::PARAMETER),
                     text_edits: None,
