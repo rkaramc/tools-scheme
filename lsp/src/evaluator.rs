@@ -10,6 +10,8 @@ pub struct EvalResult {
     pub col: u32,
     pub result: String,
     pub is_error: bool,
+    #[serde(default)]
+    pub output: String,
 }
 
 pub struct Evaluator {
