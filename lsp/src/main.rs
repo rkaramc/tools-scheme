@@ -28,15 +28,25 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let shim_path = if let Some(path_arg) = args.get(1) {
         PathBuf::from(path_arg)
     } else {
-        // Fallback: look for eval-shim.rkt in the same directory as the executable
-        let mut path = std::env::current_exe()?;
-        path.pop();
-        path.push("eval-shim.rkt");
-        if !path.exists() {
-            // Second fallback: dev path
-            std::env::current_dir()?.join("lsp/src/eval-shim.rkt")
+        // Fallback 1: check environment variable
+        let env_fallback = std::env::var("TOOLS_SCHEME_LSP_PATH")
+            .map(|s| PathBuf::from(s).join("eval-shim.rkt"))
+            .ok()
+            .filter(|p| p.exists());
+
+        if let Some(p) = env_fallback {
+            p
         } else {
-            path
+            // Fallback 2: look for eval-shim.rkt in the same directory as the executable
+            let mut path = std::env::current_exe()?;
+            path.pop();
+            path.push("eval-shim.rkt");
+            if !path.exists() {
+                // Third fallback: dev path
+                std::env::current_dir()?.join("lsp/src/eval-shim.rkt")
+            } else {
+                path
+            }
         }
     };
 

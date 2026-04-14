@@ -13,21 +13,47 @@ export function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel('Scheme Toolbox');
     outputChannel.appendLine('Activating Scheme Toolbox extension...');
 
+    const config = vscode.workspace.getConfiguration('scheme');
+    const customLspPath = config.get<string>('lspPath');
+    const customShimPath = config.get<string>('shimPath');
+    const envLspDir = process.env.TOOLS_SCHEME_LSP_PATH;
+
     // Determine the path to the LSP binary
-    const serverPath = path.resolve(
-        'd:\\source\\tools-scheme',
-        'target',
-        'debug',
-        process.platform === 'win32' ? 'scheme-toolbox-lsp.exe' : 'scheme-toolbox-lsp'
-    );
+    let serverPath = customLspPath;
+    if (!serverPath && envLspDir) {
+        const binName = process.platform === 'win32' ? 'scheme-toolbox-lsp.exe' : 'scheme-toolbox-lsp';
+        const envPath = path.join(envLspDir, binName);
+        if (require('fs').existsSync(envPath)) {
+            serverPath = envPath;
+        }
+    }
+    if (!serverPath) {
+        serverPath = context.asAbsolutePath(path.join(
+            '..',
+            '..',
+            'target',
+            'debug',
+            process.platform === 'win32' ? 'scheme-toolbox-lsp.exe' : 'scheme-toolbox-lsp'
+        ));
+    }
 
     // Determine the path to the Racket shim
-    const shimPath = path.resolve(
-        'd:\\source\\tools-scheme',
-        'lsp',
-        'src',
-        'eval-shim.rkt'
-    );
+    let shimPath = customShimPath;
+    if (!shimPath && envLspDir) {
+        const envPath = path.join(envLspDir, 'eval-shim.rkt');
+        if (require('fs').existsSync(envPath)) {
+            shimPath = envPath;
+        }
+    }
+    if (!shimPath) {
+        shimPath = context.asAbsolutePath(path.join(
+            '..',
+            '..',
+            'lsp',
+            'src',
+            'eval-shim.rkt'
+        ));
+    }
 
     outputChannel.appendLine(`LSP Server Path: ${serverPath}`);
     outputChannel.appendLine(`Racket Shim Path: ${shimPath}`);
