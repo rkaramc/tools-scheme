@@ -151,6 +151,11 @@ impl Server {
                                 json!(null),
                             );
                             connection.sender.send(Message::Request(refresh_req))?;
+
+                            // Return the evaluation results
+                            let resp = Response::new_ok(id, json!(eval_results));
+                            connection.sender.send(Message::Response(resp))?;
+                            return Ok(());
                         }
                     }
                 }
@@ -167,6 +172,9 @@ impl Server {
 
         if let Some(results) = self.results.get(&uri) {
             for res in results {
+                if res.is_error {
+                    continue;
+                }
                 let hint = InlayHint {
                     position: Position::new(res.line - 1, res.col),
                     label: InlayHintLabel::String(format!(" => {}", res.result)),
