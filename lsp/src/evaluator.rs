@@ -72,3 +72,48 @@ impl Evaluator {
         Ok(results)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_output_success() {
+        let evaluator = Evaluator::new(PathBuf::from("fake-shim"));
+        let json = r#"{"line":1,"col":10,"result":"42","is_error":false,"output":""}"#;
+        let results = evaluator.parse_output(json.as_bytes()).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].line, 1);
+        assert_eq!(results[0].result, "42");
+        assert!(!results[0].is_error);
+    }
+
+    #[test]
+    fn test_parse_output_error() {
+        let evaluator = Evaluator::new(PathBuf::from("fake-shim"));
+        let json = r#"{"line":5,"col":5,"result":"division by zero","is_error":true,"output":""}"#;
+        let results = evaluator.parse_output(json.as_bytes()).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_error);
+        assert_eq!(results[0].result, "division by zero");
+    }
+
+    #[test]
+    fn test_parse_output_multiple() {
+        let evaluator = Evaluator::new(PathBuf::from("fake-shim"));
+        let json = "{\"line\":1,\"col\":5,\"result\":\"1\",\"is_error\":false,\"output\":\"\"}\n{\"line\":2,\"col\":5,\"result\":\"2\",\"is_error\":false,\"output\":\"\"}";
+        let results = evaluator.parse_output(json.as_bytes()).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].result, "1");
+        assert_eq!(results[1].result, "2");
+    }
+
+    #[test]
+    fn test_parse_output_with_stdout() {
+        let evaluator = Evaluator::new(PathBuf::from("fake-shim"));
+        let json = r#"{"line":1,"col":10,"result":"void","is_error":false,"output":"hello\nworld"}"#;
+        let results = evaluator.parse_output(json.as_bytes()).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].output, "hello\nworld");
+    }
+}
