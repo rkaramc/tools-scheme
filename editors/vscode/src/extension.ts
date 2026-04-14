@@ -45,7 +45,15 @@ export function activate(context: vscode.ExtensionContext) {
         synchronize: {
             fileEvents: vscode.workspace.createFileSystemWatcher('**/*.{rkt,scm,ss}'),
         },
-        outputChannel: outputChannel
+        outputChannel: outputChannel,
+        middleware: {
+            provideInlayHints: async (document, range, token, next) => {
+                outputChannel.appendLine(`[InlayHints] Requesting hints for ${document.uri.toString()} over range: ${JSON.stringify(range)}`);
+                const result = await next(document, range, token);
+                outputChannel.appendLine(`[InlayHints] Received hints: ${JSON.stringify(result, null, 2)}`);
+                return result;
+            }
+        }
     };
 
     client = new LanguageClient(
@@ -80,11 +88,11 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         try {
-            await client.sendRequest('workspace/executeCommand', {
+            const result = await client.sendRequest('workspace/executeCommand', {
                 command: 'scheme.evaluate',
                 arguments: [uri]
             });
-            outputChannel.appendLine('Evaluation command sent successfully.');
+            outputChannel.appendLine(`Evaluation command completed. Results:\n${JSON.stringify(result, null, 2)}`);
         } catch (err) {
             outputChannel.appendLine(`Evaluation failed: ${err}`);
             vscode.window.showErrorMessage(`Evaluation failed: ${err}`);
