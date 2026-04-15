@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
 import {
     LanguageClient,
     LanguageClientOptions,
@@ -8,6 +10,7 @@ import {
 
 let client: LanguageClient;
 let outputChannel: vscode.OutputChannel;
+let tempServerPath: string | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel('Scheme Toolbox');
@@ -23,7 +26,7 @@ export function activate(context: vscode.ExtensionContext) {
     if (!serverPath && envLspDir) {
         const binName = process.platform === 'win32' ? 'scheme-toolbox-lsp.exe' : 'scheme-toolbox-lsp';
         const envPath = path.join(envLspDir, binName);
-        if (require('fs').existsSync(envPath)) {
+        if (fs.existsSync(envPath)) {
             serverPath = envPath;
         }
     }
@@ -35,6 +38,19 @@ export function activate(context: vscode.ExtensionContext) {
             'debug',
             process.platform === 'win32' ? 'scheme-toolbox-lsp.exe' : 'scheme-toolbox-lsp'
         ));
+    }
+
+    // On Windows, copy the executable to a temporary location to avoid locking the original
+    if (process.platform === 'win32') {
+        try {
+            const tempName = `scheme-toolbox-lsp-${Date.now()}.exe`;
+            tempServerPath = path.join(os.tmpdir(), tempName);
+            fs.copyFileSync(serverPath, tempServerPath);
+            serverPath = tempServerPath;
+            outputChannel.appendLine(`Copied LSP binary to temporary location: ${tempServerPath}`);
+        } catch (err) {
+            outputChannel.appendLine(`Failed to copy LSP binary to temporary location: ${err}`);
+        }
     }
 
     // Determine the path to the Racket shim
@@ -132,9 +148,15 @@ export function activate(context: vscode.ExtensionContext) {
     client.start();
 }
 
-export function deactivate(): Thenable<void> | undefined {
-    if (!client) {
-        return undefined;
+export async function deactivate(): Promise<void> {
+    if (client) {
+        await client.stop();
     }
-    return client.stop();
+    if (tempServerPath && fs.existsSync(tempServerPath)) {
+        try {
+            fs.unlinkSync(tempServerPath);
+        } catch (err) {
+            // Best effort cleanup
+        }
+    }
 }
