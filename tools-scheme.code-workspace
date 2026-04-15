@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "editors/vscode"
+		},
+		{
+			"path": "../learn-scheme/little-schemer"
+		}
+	],
+	"settings": {}
+}
