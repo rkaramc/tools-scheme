@@ -145,7 +145,7 @@
   (define base
     (hasheq 'line (or line 1)
             'col (or col 0)
-            'result (if (exn? val) (exn-message val) (format "~a" val))
+            'result (if (exn? val) (exn-message val) (format "~v" val))
             'is_error is-error
             'output output))
   (displayln (jsexpr->string base) real-stdout)
