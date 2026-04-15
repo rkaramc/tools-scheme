@@ -1,7 +1,7 @@
 use lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, InlayHintTooltip, Position};
 use crate::evaluator::EvalResult;
 
-pub fn results_to_hints(results: &[EvalResult]) -> Vec<InlayHint> {
+pub fn results_to_hints(results: &[EvalResult], doc_text: Option<&str>) -> Vec<InlayHint> {
     results.iter()
         .filter(|res| !res.is_error)
         .map(|res| {
@@ -30,8 +30,21 @@ pub fn results_to_hints(results: &[EvalResult]) -> Vec<InlayHint> {
                 None
             };
 
+            // `res.col` is the Unicode Code Point index (from Racket)
+            // LSP `Position::character` handles UTF-16 code units. We must map the offset.
+            let mut utf16_col = res.col;
+            if let Some(text) = doc_text {
+                if res.line > 0 {
+                    let line_idx = (res.line - 1) as usize;
+                    if let Some(line_str) = text.lines().nth(line_idx) {
+                        let code_point_idx = res.col as usize;
+                        utf16_col = line_str.chars().take(code_point_idx).map(|c| c.len_utf16() as u32).sum();
+                    }
+                }
+            }
+
             InlayHint {
-                position: Position::new(res.line - 1, res.col),
+                position: Position::new(res.line.saturating_sub(1), utf16_col),
                 label: InlayHintLabel::String(label),
                 kind: Some(InlayHintKind::PARAMETER),
                 text_edits: None,
@@ -59,7 +72,7 @@ mod tests {
                 output: "10\n".to_string(), // Output same as result (trimmed)
             }
         ];
-        let hints = results_to_hints(&results);
+        let hints = results_to_hints(&results, None);
         assert_eq!(hints.len(), 1);
         if let InlayHintLabel::String(label) = &hints[0].label {
             assert_eq!(label, " => 10"); // No notebook icon
@@ -78,7 +91,7 @@ mod tests {
                 output: "hello".to_string(), // Output different from result
             }
         ];
-        let hints = results_to_hints(&results);
+        let hints = results_to_hints(&results, None);
         assert_eq!(hints.len(), 1);
         if let InlayHintLabel::String(label) = &hints[0].label {
             assert_eq!(label, " => other 📝"); // Includes notebook icon
@@ -97,7 +110,7 @@ mod tests {
                 output: "hello world\nline 2".to_string(),
             }
         ];
-        let hints = results_to_hints(&results);
+        let hints = results_to_hints(&results, None);
         assert_eq!(hints.len(), 1);
         if let InlayHintLabel::String(label) = &hints[0].label {
             assert_eq!(label, " => hello world 📝"); // Shows output instead of 'void', and has extra lines

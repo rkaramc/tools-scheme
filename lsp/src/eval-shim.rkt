@@ -61,16 +61,21 @@
       [(not (string=? captured ""))
        (display-result end-line end-col 0 'void #f captured)])))
 
+(define file-content-cache (make-hash))
+(define (get-normalized-content path)
+  (hash-ref! file-content-cache path
+             (lambda ()
+               (string-replace (file->string path) "\r\n" "\n"))))
+
 (define (get-syntax-end stx target-path)
   (let ([pos (syntax-position stx)]
         [span (syntax-span stx)])
     (if (and pos span)
-        (let ([p (open-input-file target-path)])
+        (let ([p (open-input-string (get-normalized-content target-path))])
           (port-count-lines! p)
           (read-string (- pos 1) p) ;; Skip to start
           (read-string span p)      ;; Read the actual syntax
           (define-values (l c p-end) (port-next-location p))
-          (close-input-port p)
           (values l c))
         (values (or (syntax-line stx) 1) 
                 (+ (or (syntax-column stx) 0) (or span 0))))))

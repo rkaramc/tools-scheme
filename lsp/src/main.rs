@@ -219,7 +219,8 @@ impl Server {
         let mut hints = Vec::new();
 
         if let Some(results) = self.results.get(&uri) {
-            hints = inlay_hints::results_to_hints(results);
+            let doc_text = self.document_store.get(&uri).map(|d| d.text.as_str());
+            hints = inlay_hints::results_to_hints(results, doc_text);
         }
 
         let resp = Response::new_ok(id, Some(hints));
