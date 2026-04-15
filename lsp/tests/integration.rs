@@ -1,6 +1,6 @@
 use std::process::Command;
 use std::path::PathBuf;
-use std::io::{Write, BufRead, BufReader, Read};
+use std::io::{Write, BufRead, BufReader};
 
 #[test]
 fn test_lsp_eval_integration() {

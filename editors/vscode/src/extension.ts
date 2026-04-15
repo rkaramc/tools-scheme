@@ -121,7 +121,43 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
 
+    const evaluateSelectionCommand = vscode.commands.registerCommand('scheme.runEvaluateSelection', async () => {
+        const activeEditor = vscode.window.activeTextEditor;
+        if (!activeEditor) {
+            vscode.window.showErrorMessage('No active editor to evaluate selection from.');
+            return;
+        }
+
+        const selection = activeEditor.selection;
+        if (selection.isEmpty) {
+            vscode.window.showInformationMessage('No text selected to evaluate.');
+            return;
+        }
+
+        const selectedText = activeEditor.document.getText(selection);
+        const uri = activeEditor.document.uri.toString();
+
+        outputChannel.appendLine(`Triggering selection evaluation for: ${uri}`);
+
+        if (!client) {
+            vscode.window.showErrorMessage('LSP Client not initialized.');
+            return;
+        }
+
+        try {
+            const result = await client.sendRequest('workspace/executeCommand', {
+                command: 'scheme.evaluateSelection',
+                arguments: [uri, selectedText]
+            });
+            outputChannel.appendLine(`Evaluate selection command completed. Results:\n${JSON.stringify(result, null, 2)}`);
+        } catch (err) {
+            outputChannel.appendLine(`Evaluate selection failed: ${err}`);
+            vscode.window.showErrorMessage(`Evaluate selection failed: ${err}`);
+        }
+    });
+
     context.subscriptions.push(evaluateCommand);
+    context.subscriptions.push(evaluateSelectionCommand);
 }
 
 function startClient(context: vscode.ExtensionContext) {

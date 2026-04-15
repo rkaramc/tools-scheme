@@ -70,7 +70,10 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         })),
         inlay_hint_provider: Some(lsp_types::OneOf::Left(true)),
         execute_command_provider: Some(lsp_types::ExecuteCommandOptions {
-            commands: vec!["scheme.evaluate".to_string()],
+            commands: vec![
+                "scheme.evaluate".to_string(),
+                "scheme.evaluateSelection".to_string(),
+            ],
             ..Default::default()
         }),
         ..Default::default()
@@ -155,12 +158,22 @@ impl Server {
     }
 
     fn handle_execute_command(&mut self, connection: &Connection, id: RequestId, params: lsp_types::ExecuteCommandParams) -> Result<(), Box<dyn Error + Sync + Send>> {
-        if params.command == "scheme.evaluate" {
+        if params.command == "scheme.evaluate" || params.command == "scheme.evaluateSelection" {
             if let Some(arg) = params.arguments.get(0) {
                 if let Some(uri_str) = arg.as_str() {
                     let uri = lsp_types::Url::parse(uri_str)?;
                     
-                    let eval_results = if let Some(doc) = self.document_store.get(uri_str) {
+                    let eval_results = if params.command == "scheme.evaluateSelection" {
+                        if let Some(text_arg) = params.arguments.get(1) {
+                            if let Some(selected_text) = text_arg.as_str() {
+                                self.evaluator.evaluate_str(selected_text)
+                            } else {
+                                Err(anyhow::anyhow!("Invalid text argument for evaluateSelection"))
+                            }
+                        } else {
+                            Err(anyhow::anyhow!("Missing text argument for evaluateSelection"))
+                        }
+                    } else if let Some(doc) = self.document_store.get(uri_str) {
                         self.evaluator.evaluate_str(&doc.text)
                     } else if let Ok(path) = uri.to_file_path() {
                         self.evaluator.evaluate(&path)

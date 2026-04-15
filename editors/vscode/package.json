@@ -21,6 +21,11 @@
                 "command": "scheme.runEvaluation",
                 "title": "Evaluate Scheme File",
                 "icon": "$(play)"
+            },
+            {
+                "command": "scheme.runEvaluateSelection",
+                "title": "Evaluate Selection",
+                "icon": "$(play-circle)"
             }
         ],
         "menus": {
@@ -36,6 +41,11 @@
                     "command": "scheme.runEvaluation",
                     "group": "navigation",
                     "when": "editorLangId == racket || editorLangId == scheme"
+                },
+                {
+                    "command": "scheme.runEvaluateSelection",
+                    "group": "navigation",
+                    "when": "editorHasSelection && (editorLangId == racket || editorLangId == scheme)"
                 }
             ]
         },
