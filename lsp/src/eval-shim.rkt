@@ -23,7 +23,7 @@
       (define stx (read-syntax target-path port))
       (unless (eof-object? stx)
         (with-handlers ([exn:fail? (lambda (e) 
-                                     (define-values (l c) (get-syntax-end stx target-path))
+                                     (define-values (l c) (get-exn-location e stx target-path))
                                      (display-result l c 0 e #t "")
                                      (loop))])
           
@@ -44,7 +44,7 @@
 
 (define (evaluate-single-form stx ns target-path)
   (with-handlers ([exn:fail? (lambda (e) 
-                               (define-values (l c) (get-syntax-end stx target-path))
+                               (define-values (l c) (get-exn-location e stx target-path))
                                (display-result l c 0 e #t ""))])
     (define capture-port (open-output-string))
     (define result
@@ -66,6 +66,14 @@
   (hash-ref! file-content-cache path
              (lambda ()
                (string-replace (file->string path) "\r\n" "\n"))))
+
+(define (get-exn-location e stx target-path)
+  (let ([loc (and (exn:srclocs? e) 
+                  (pair? ((exn:srclocs-accessor e) e))
+                  (car ((exn:srclocs-accessor e) e)))])
+    (if (and loc (srcloc-line loc) (srcloc-column loc))
+        (values (srcloc-line loc) (srcloc-column loc))
+        (get-syntax-end stx target-path))))
 
 (define (get-syntax-end stx target-path)
   (let ([pos (syntax-position stx)]
