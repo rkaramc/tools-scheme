@@ -4,9 +4,9 @@ use lsp_types::{
         DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification,
         PublishDiagnostics,
     },
-    request::{CodeActionRequest, ExecuteCommand, InlayHintRequest},
-    CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams, Command,
-    Diagnostic, DiagnosticSeverity, InlayHintParams,
+    request::{CodeActionRequest, CodeLensRequest, ExecuteCommand, InlayHintRequest},
+    CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams, CodeLens,
+    CodeLensOptions, CodeLensParams, Command, Diagnostic, DiagnosticSeverity, InlayHintParams,
     Position, PublishDiagnosticsParams, Range, ServerCapabilities, TextDocumentSyncCapability,
     TextDocumentSyncKind, WorkDoneProgressOptions,
 };
@@ -26,7 +26,7 @@ use parser::Parser;
 
 struct Server {
     evaluator: Evaluator,
-    _parser: Parser,
+    parser: Parser,
     results: HashMap<String, Vec<EvalResult>>,
     document_store: DocumentStore,
 }
@@ -69,6 +69,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             resolve_provider: Some(false),
         })),
         inlay_hint_provider: Some(lsp_types::OneOf::Left(true)),
+        code_lens_provider: Some(CodeLensOptions {
+            resolve_provider: Some(false),
+        }),
         execute_command_provider: Some(lsp_types::ExecuteCommandOptions {
             commands: vec![
                 "scheme.evaluate".to_string(),
@@ -86,7 +89,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
     let mut server = Server {
         evaluator: server_evaluator,
-        _parser: Parser::new(),
+        parser: Parser::new(),
         results: HashMap::new(),
         document_store: DocumentStore::new(),
     };
@@ -123,6 +126,8 @@ impl Server {
             self.handle_execute_command(connection, req.id, params)?;
         } else if let Some(params) = cast_request::<InlayHintRequest>(&req) {
             self.handle_inlay_hints(connection, req.id, params)?;
+        } else if let Some(params) = cast_request::<CodeLensRequest>(&req) {
+            self.handle_code_lens(connection, req.id, params)?;
         }
         Ok(())
     }
@@ -247,6 +252,44 @@ impl Server {
         }
 
         let resp = Response::new_ok(id, Some(hints));
+        connection.sender.send(Message::Response(resp))?;
+        Ok(())
+    }
+
+    fn handle_code_lens(&self, connection: &Connection, id: RequestId, params: CodeLensParams) -> Result<(), Box<dyn Error + Sync + Send>> {
+        let uri_str = params.text_document.uri.to_string();
+        let mut lenses = Vec::new();
+
+        if let Some(doc) = self.document_store.get(&uri_str) {
+            let ranges = self.parser.find_top_level_expressions(&doc.text);
+            for range in ranges {
+                // Extract the text for this range
+                let start_idx = doc.text.lines().take(range.start.line as usize).map(|l| l.len() + 1).sum::<usize>() + range.start.character as usize;
+                let mut end_idx = doc.text.lines().take(range.end.line as usize).map(|l| l.len() + 1).sum::<usize>() + range.end.character as usize;
+                // Basic clamp to avoid out-of-bounds
+                if end_idx > doc.text.len() { end_idx = doc.text.len(); }
+                
+                let selected_text = if start_idx < end_idx {
+                    &doc.text[start_idx..end_idx]
+                } else {
+                    ""
+                };
+
+                let cmd = Command {
+                    title: "▶ Evaluate".to_string(),
+                    command: "scheme.evaluateSelection".to_string(),
+                    arguments: Some(vec![json!(uri_str), json!(selected_text)]),
+                };
+                
+                lenses.push(CodeLens {
+                    range,
+                    command: Some(cmd),
+                    data: None,
+                });
+            }
+        }
+
+        let resp = Response::new_ok(id, Some(lenses));
         connection.sender.send(Message::Response(resp))?;
         Ok(())
     }
