@@ -8,6 +8,8 @@ use std::path::PathBuf;
 pub struct EvalResult {
     pub line: u32,
     pub col: u32,
+    #[serde(default)]
+    pub end_col: u32,
     pub result: String,
     pub is_error: bool,
     #[serde(default)]
