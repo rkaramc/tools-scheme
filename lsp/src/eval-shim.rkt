@@ -130,11 +130,14 @@
 
 (define (get-syntax-end stx target-path)
   (let ([pos (syntax-position stx)]
-        [span (syntax-span stx)])
-    (if (and (not (symbol? target-path)) pos span)
+        [span (syntax-span stx)]
+        [line (syntax-line stx)]
+        [col (syntax-column stx)])
+    (if (and (not (symbol? target-path)) pos span line col)
         (let ([p (open-input-string (get-normalized-content target-path))])
           (port-count-lines! p)
-          (read-string (- pos 1) p) ;; Skip to start
+          (file-position p (- pos 1))
+          (set-port-next-location! p line col pos)
           (read-string span p)      ;; Read the actual syntax
           (define-values (l c p-end) (port-next-location p))
           (values l c))
