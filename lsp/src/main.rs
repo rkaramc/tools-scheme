@@ -78,8 +78,11 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
     let _initialization_params = connection.initialize(server_capabilities)?;
 
+    let server_evaluator = Evaluator::new(shim_path)
+        .map_err(|e| format!("Failed to initialize evaluator: {}", e))?;
+
     let mut server = Server {
-        evaluator: Evaluator::new(shim_path),
+        evaluator: server_evaluator,
         _parser: Parser::new(),
         results: HashMap::new(),
         document_store: DocumentStore::new(),
@@ -165,46 +168,53 @@ impl Server {
                         Err(anyhow::anyhow!("Could not find file or buffer content"))
                     };
 
-                    if let Ok(eval_results) = eval_results {
-                        self.results.insert(uri_str.to_string(), eval_results.clone());
-                        
-                        let mut diagnostics = Vec::new();
-                        for res in &eval_results {
-                            if res.is_error {
-                                diagnostics.push(Diagnostic {
-                                    range: Range::new(
-                                        Position::new(res.line - 1, res.col),
-                                        Position::new(res.line - 1, 999),
-                                    ),
-                                    severity: Some(DiagnosticSeverity::ERROR),
-                                    message: res.result.clone(),
-                                    ..Default::default()
-                                });
+                    match eval_results {
+                        Ok(eval_results) => {
+                            self.results.insert(uri_str.to_string(), eval_results.clone());
+                            
+                            let mut diagnostics = Vec::new();
+                            for res in &eval_results {
+                                if res.is_error {
+                                    diagnostics.push(Diagnostic {
+                                        range: Range::new(
+                                            Position::new(res.line - 1, res.col),
+                                            Position::new(res.line - 1, 999),
+                                        ),
+                                        severity: Some(DiagnosticSeverity::ERROR),
+                                        message: res.result.clone(),
+                                        ..Default::default()
+                                    });
+                                }
                             }
+                            let params = PublishDiagnosticsParams {
+                                uri: uri.clone(),
+                                diagnostics,
+                                version: None,
+                            };
+                            let not = lsp_server::Notification::new(
+                                PublishDiagnostics::METHOD.to_string(),
+                                params,
+                            );
+                            connection.sender.send(Message::Notification(not))?;
+
+                            // Send a request to refresh inlay hints
+                            let refresh_req = Request::new(
+                                RequestId::from(999),
+                                "workspace/inlayHint/refresh".to_string(),
+                                json!(null),
+                            );
+                            connection.sender.send(Message::Request(refresh_req))?;
+
+                            // Return the evaluation results
+                            let resp = Response::new_ok(id, json!(eval_results));
+                            connection.sender.send(Message::Response(resp))?;
+                            return Ok(());
                         }
-                        let params = PublishDiagnosticsParams {
-                            uri: uri.clone(),
-                            diagnostics,
-                            version: None,
-                        };
-                        let not = lsp_server::Notification::new(
-                            PublishDiagnostics::METHOD.to_string(),
-                            params,
-                        );
-                        connection.sender.send(Message::Notification(not))?;
-
-                        // Send a request to refresh inlay hints
-                        let refresh_req = Request::new(
-                            RequestId::from(999),
-                            "workspace/inlayHint/refresh".to_string(),
-                            json!(null),
-                        );
-                        connection.sender.send(Message::Request(refresh_req))?;
-
-                        // Return the evaluation results
-                        let resp = Response::new_ok(id, json!(eval_results));
-                        connection.sender.send(Message::Response(resp))?;
-                        return Ok(());
+                        Err(e) => {
+                            let resp = Response::new_err(id, lsp_server::ErrorCode::InternalError as i32, format!("Evaluation error: {}", e));
+                            connection.sender.send(Message::Response(resp))?;
+                            return Ok(());
+                        }
                     }
                 }
             }
