@@ -67,6 +67,7 @@ mod tests {
             EvalResult {
                 line: 1,
                 col: 5,
+                end_col: 6,
                 result: "10".to_string(),
                 is_error: false,
                 output: "10\n".to_string(), // Output same as result (trimmed)
@@ -86,6 +87,7 @@ mod tests {
             EvalResult {
                 line: 1,
                 col: 5,
+                end_col: 6,
                 result: "other".to_string(),
                 is_error: false,
                 output: "hello".to_string(), // Output different from result
@@ -105,6 +107,7 @@ mod tests {
             EvalResult {
                 line: 1,
                 col: 5,
+                end_col: 6,
                 result: "void".to_string(),
                 is_error: false,
                 output: "hello world\nline 2".to_string(),

@@ -196,7 +196,7 @@ impl Server {
                                     diagnostics.push(Diagnostic {
                                         range: Range::new(
                                             Position::new(res.line - 1, res.col),
-                                            Position::new(res.line - 1, 999),
+                                            Position::new(res.line - 1, res.end_col),
                                         ),
                                         severity: Some(DiagnosticSeverity::ERROR),
                                         message: res.result.clone(),
