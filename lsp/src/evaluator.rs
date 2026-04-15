@@ -18,16 +18,22 @@ pub struct Evaluator {
     stdin: ChildStdin,
     stdout_reader: BufReader<ChildStdout>,
     _child: Child,
+    session_file: std::fs::File,
 }
 
 impl Evaluator {
     pub fn new(shim_path: PathBuf) -> Result<Self> {
+        let session_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(".session")?;
+
         let mut child = Command::new("racket")
             .arg(shim_path)
             .arg("--repl")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::from(session_file.try_clone()?))
             .spawn()?;
 
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("Failed to open stdin"))?;
@@ -38,6 +44,7 @@ impl Evaluator {
             stdin,
             stdout_reader,
             _child: child,
+            session_file,
         })
     }
 
@@ -47,6 +54,9 @@ impl Evaluator {
     }
 
     pub fn evaluate_str(&mut self, content: &str) -> Result<Vec<EvalResult>> {
+        writeln!(&mut self.session_file, "\n--- EVAL INPUT ---\n{}\n--- EVAL OUTPUT ---", content)?;
+        self.session_file.flush()?;
+
         let req = serde_json::json!({
             "type": "evaluate",
             "content": content
@@ -67,6 +77,9 @@ impl Evaluator {
             if n == 0 {
                 return Err(anyhow!("REPL process exited unexpectedly"));
             }
+
+            self.session_file.write_all(buffer.as_bytes())?;
+            self.session_file.flush()?;
             
             let trimmed = buffer.trim();
             if trimmed == "READY" {
