@@ -25,7 +25,7 @@
       (unless (eof-object? stx)
         (with-handlers ([exn:fail? (lambda (e) 
                                      (define-values (l c end-c) (get-exn-location e stx target-path))
-                                     (display-result l c end-c e #t "")
+                                     (display-result l c l end-c e #t "")
                                      (loop))])
           
           (define expanded (expand stx))
@@ -73,7 +73,7 @@
       (define input (read-line))
       (unless (eof-object? input)
         (with-handlers ([exn:fail? (lambda (e)
-                                     (display-result 1 0 0 e #t "")
+                                     (display-result 1 0 1 0 e #t "")
                                      (displayln "READY" real-stdout)
                                      (flush-output real-stdout)
                                      (loop))])
@@ -136,15 +136,18 @@
         [line (syntax-line stx)]
         [col (syntax-column stx)])
     (if (and (not (symbol? target-path)) pos span line col)
-        (let ([p (open-input-string (get-file-content target-path))])
-          (port-count-lines! p)
-          (file-position p (- pos 1))
-          (set-port-next-location! p line col pos)
-          (read-string span p)      ;; Read the actual syntax
-          (define-values (l c p-end) (port-next-location p))
-          (values l c))
-        (values (or (syntax-line stx) 1) 
-                (+ (or (syntax-column stx) 0) (or (syntax-span stx) 0))))))
+        (let* ([content (get-file-content target-path)]
+               ;; Substring can be out of bounds if file changed, so guard it
+               [sub (if (<= (+ pos -1 span) (string-length content))
+                        (substring content (- pos 1) (+ pos -1 span))
+                        "")]
+               [lines (string-split sub "\n" #:trim? #f)])
+          (if (<= (length lines) 1)
+              (values line (+ col span))
+              (let ([last-line (last lines)])
+                (values (+ line (length lines) -1)
+                        (string-length last-line)))))
+        (values (or line 1) (+ (or col 0) (or span 0))))))
 
 (define (display-result line col end-line end-col val is-error output)
   (define base
