@@ -3,6 +3,7 @@ use std::process::{Command, Stdio, Child, ChildStdin, ChildStdout};
 use std::io::{BufRead, BufReader, Write};
 use anyhow::{Result, anyhow};
 use std::path::PathBuf;
+use std::fs::File;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvalResult {
@@ -22,22 +23,22 @@ pub struct Evaluator {
     stdin: ChildStdin,
     stdout_reader: BufReader<ChildStdout>,
     _child: Child,
-    session_file: std::fs::File,
+    global_session: std::fs::File,
 }
 
 impl Evaluator {
     pub fn new(shim_path: PathBuf) -> Result<Self> {
-        let session_file = std::fs::OpenOptions::new()
+        let global_session = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(".session")?;
+            .open("global.session")?;
 
         let mut child = Command::new("racket")
             .arg(shim_path)
             .arg("--repl")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::from(session_file.try_clone()?))
+            .stderr(Stdio::from(global_session.try_clone()?))
             .spawn()?;
 
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("Failed to open stdin"))?;
@@ -48,18 +49,23 @@ impl Evaluator {
             stdin,
             stdout_reader,
             _child: child,
-            session_file,
+            global_session,
         })
     }
 
     pub fn evaluate(&mut self, target_path: &PathBuf) -> Result<Vec<EvalResult>> {
         let content = std::fs::read_to_string(target_path)?;
-        self.evaluate_str(&content)
+        self.evaluate_str(&content, None)
     }
 
-    pub fn evaluate_str(&mut self, content: &str) -> Result<Vec<EvalResult>> {
-        writeln!(&mut self.session_file, "\n--- EVAL INPUT ---\n{}\n--- EVAL OUTPUT ---", content)?;
-        self.session_file.flush()?;
+    pub fn evaluate_str(&mut self, content: &str, log: Option<&File>) -> Result<Vec<EvalResult>> {
+        if let Some(mut file) = log {
+            writeln!(file, "\n--- EVAL INPUT ---\n{}\n--- EVAL OUTPUT ---", content)?;
+            file.flush()?;
+        } else {
+            writeln!(&mut self.global_session, "\n--- EVAL INPUT (NO LOG) ---\n{}\n--- EVAL OUTPUT ---", content)?;
+            self.global_session.flush()?;
+        }
 
         let req = serde_json::json!({
             "type": "evaluate",
@@ -82,8 +88,13 @@ impl Evaluator {
                 return Err(anyhow!("REPL process exited unexpectedly"));
             }
 
-            self.session_file.write_all(buffer.as_bytes())?;
-            self.session_file.flush()?;
+            if let Some(mut file) = log {
+                file.write_all(buffer.as_bytes())?;
+                file.flush()?;
+            } else {
+                self.global_session.write_all(buffer.as_bytes())?;
+                self.global_session.flush()?;
+            }
             
             let trimmed = buffer.trim();
             if trimmed == "READY" {

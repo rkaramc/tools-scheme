@@ -141,7 +141,15 @@ fn eval_worker(
     sender: crossbeam_channel::Sender<Message>,
 ) {
     for task in rx {
-        let eval_results = evaluator.evaluate_str(&task.content);
+        let (content, log_handle) = {
+            let state_read = state.read().unwrap();
+            let doc = state_read.document_store.get(&task.uri);
+            let handle = doc.and_then(|d| d.session_file.as_ref())
+                           .and_then(|f| f.try_clone().ok());
+            (task.content.clone(), handle)
+        };
+
+        let eval_results = evaluator.evaluate_str(&content, log_handle.as_ref());
 
         let uri_str = task.uri.clone();
         let uri = match lsp_types::Url::parse(&uri_str) {
