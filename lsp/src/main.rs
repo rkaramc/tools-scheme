@@ -38,6 +38,7 @@ struct EvalTask {
     uri: String,
     /// Snapshot of document content taken at dispatch time.
     content: String,
+    request_id: RequestId,
 }
 
 struct Server {
@@ -117,9 +118,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let worker_state = Arc::clone(&state);
     let worker_sender = connection.sender.clone();
     std::thread::spawn(move || {
-        eval_worker(evaluator, eval_rx, worker_state, move |msg| {
-            worker_sender.send(msg).map_err(|e| format!("send error: {}", e).into())
-        });
+        eval_worker(evaluator, eval_rx, worker_state, worker_sender);
     });
 
     let mut server = Server {
@@ -135,15 +134,12 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 }
 
 /// Background thread: receives EvalTask, evaluates, updates SharedState, sends notifications.
-fn eval_worker<S>(
+fn eval_worker(
     mut evaluator: Evaluator,
     rx: mpsc::Receiver<EvalTask>,
     state: Arc<RwLock<SharedState>>,
-    sender: S,
-)
-where
-    S: Fn(Message) -> Result<(), Box<dyn Error + Sync + Send>> + Send + 'static,
-{
+    sender: crossbeam_channel::Sender<Message>,
+) {
     for task in rx {
         let eval_results = evaluator.evaluate_str(&task.content);
 
@@ -198,7 +194,7 @@ where
                     PublishDiagnostics::METHOD.to_string(),
                     diag_params,
                 );
-                let _ = sender(Message::Notification(not));
+                let _ = sender.send(Message::Notification(not));
 
                 // Ask the client to refresh inlay hints.
                 let refresh_req = Request::new(
@@ -206,7 +202,7 @@ where
                     "workspace/inlayHint/refresh".to_string(),
                     json!(null),
                 );
-                let _ = sender(Message::Request(refresh_req));
+                let _ = sender.send(Message::Request(refresh_req));
             }
             Err(e) => {
                 // Send an error notification via diagnostics so the user sees it.
@@ -224,7 +220,7 @@ where
                     PublishDiagnostics::METHOD.to_string(),
                     diag_params,
                 );
-                let _ = sender(Message::Notification(not));
+                let _ = sender.send(Message::Notification(not));
             }
         }
     }
@@ -319,6 +315,7 @@ impl Server {
                             let _ = self.eval_tx.send(EvalTask {
                                 uri: uri_str,
                                 content,
+                                request_id: id.clone(),
                             });
                             // Acknowledge the request immediately. Results arrive
                             // via PublishDiagnostics and inlayHint/refresh notifications.
