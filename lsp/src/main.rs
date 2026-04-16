@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::PathBuf;
 
+mod coordinates;
 mod documents;
 mod evaluator;
 mod inlay_hints;
@@ -137,7 +138,7 @@ impl Server {
             self.document_store.open(params.text_document);
         } else if let Some(params) = cast_notification::<DidChangeTextDocument>(&not) {
             self.document_store.change(
-                &params.text_document.uri.to_string(),
+                params.text_document.uri.as_ref(),
                 params.text_document.version,
                 params.content_changes,
             );
@@ -164,7 +165,7 @@ impl Server {
 
     fn handle_execute_command(&mut self, connection: &Connection, id: RequestId, params: lsp_types::ExecuteCommandParams) -> Result<(), Box<dyn Error + Sync + Send>> {
         if params.command == "scheme.evaluate" || params.command == "scheme.evaluateSelection" {
-            if let Some(arg) = params.arguments.get(0) {
+            if let Some(arg) = params.arguments.first() {
                 if let Some(uri_str) = arg.as_str() {
                     let uri = lsp_types::Url::parse(uri_str)?;
                     
@@ -191,12 +192,21 @@ impl Server {
                             self.results.insert(uri_str.to_string(), eval_results.clone());
                             
                             let mut diagnostics = Vec::new();
+                            let doc_for_diag = self.document_store.get(uri_str);
                             for res in &eval_results {
                                 if res.is_error {
+                                    let lsp_line = res.line.saturating_sub(1);
+                                    let (start_col, end_col) = match doc_for_diag {
+                                        Some(d) => (
+                                            d.line_index.code_point_to_utf16(&d.text, lsp_line as usize, res.col as usize),
+                                            d.line_index.code_point_to_utf16(&d.text, lsp_line as usize, res.end_col as usize),
+                                        ),
+                                        None => (res.col, res.end_col),
+                                    };
                                     diagnostics.push(Diagnostic {
                                         range: Range::new(
-                                            Position::new(res.line - 1, res.col),
-                                            Position::new(res.line - 1, res.end_col),
+                                            Position::new(lsp_line, start_col),
+                                            Position::new(lsp_line, end_col),
                                         ),
                                         severity: Some(DiagnosticSeverity::ERROR),
                                         message: res.result.clone(),
@@ -247,8 +257,10 @@ impl Server {
         let mut hints = Vec::new();
 
         if let Some(results) = self.results.get(&uri) {
-            let doc_text = self.document_store.get(&uri).map(|d| d.text.as_str());
-            hints = inlay_hints::results_to_hints(results, doc_text);
+            let doc = self.document_store.get(&uri);
+            let doc_text = doc.map(|d| d.text.as_str());
+            let line_index = doc.map(|d| &d.line_index);
+            hints = inlay_hints::results_to_hints(results, line_index, doc_text);
         }
 
         let resp = Response::new_ok(id, Some(hints));
@@ -263,11 +275,10 @@ impl Server {
         if let Some(doc) = self.document_store.get(&uri_str) {
             let ranges = self.parser.find_top_level_expressions(&doc.text);
             for range in ranges {
-                // Extract the text for this range
-                let start_idx = doc.text.lines().take(range.start.line as usize).map(|l| l.len() + 1).sum::<usize>() + range.start.character as usize;
-                let mut end_idx = doc.text.lines().take(range.end.line as usize).map(|l| l.len() + 1).sum::<usize>() + range.end.character as usize;
-                // Basic clamp to avoid out-of-bounds
-                if end_idx > doc.text.len() { end_idx = doc.text.len(); }
+                let start_idx = doc.line_index.lsp_position_to_byte(&doc.text, range.start);
+                let end_idx = doc.line_index.lsp_position_to_byte(&doc.text, range.end);
+                // Clamp to text length
+                let end_idx = end_idx.min(doc.text.len());
                 
                 let selected_text = if start_idx < end_idx {
                     &doc.text[start_idx..end_idx]
