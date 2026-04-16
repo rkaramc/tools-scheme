@@ -33,13 +33,17 @@ struct SharedState {
     document_store: DocumentStore,
 }
 
-/// A request to evaluate Scheme content, dispatched to the worker thread.
+enum EvalAction {
+    Evaluate { content: String, request_id: RequestId },
+    Clear,
+}
+
+/// A request to perform an action in the evaluation worker thread.
 struct EvalTask {
     uri: String,
-    /// Snapshot of document content taken at dispatch time.
-    content: String,
-    request_id: RequestId,
+    action: EvalAction,
 }
+
 
 struct Server {
     eval_tx: mpsc::SyncSender<EvalTask>,
@@ -141,15 +145,17 @@ fn eval_worker(
     sender: crossbeam_channel::Sender<Message>,
 ) {
     for task in rx {
-        let (content, log_handle) = {
-            let state_read = state.read().unwrap();
-            let doc = state_read.document_store.get(&task.uri);
-            let handle = doc.and_then(|d| d.session_file.as_ref())
-                           .and_then(|f| f.try_clone().ok());
-            (task.content.clone(), handle)
-        };
+        match task.action {
+            EvalAction::Evaluate { content, .. } => {
+                let log_handle = {
+                    let state_read = state.read().unwrap();
+                    let doc = state_read.document_store.get(&task.uri);
+                    doc.and_then(|d| d.session_file.as_ref())
+                       .and_then(|f| f.try_clone().ok())
+                };
 
-        let eval_results = evaluator.evaluate_str(&content, log_handle.as_ref());
+                let eval_results = evaluator.evaluate_str(&content, Some(&task.uri), log_handle.as_ref());
+
 
         let uri_str = task.uri.clone();
         let uri = match lsp_types::Url::parse(&uri_str) {
@@ -234,6 +240,11 @@ fn eval_worker(
             }
         }
     }
+            EvalAction::Clear => {
+                let _ = evaluator.clear_namespace(&task.uri);
+            }
+        }
+    }
 }
 
 impl Server {
@@ -282,9 +293,16 @@ impl Server {
             let mut state = self.state.write().unwrap();
             state.document_store.close(&uri);
             state.results.remove(&uri);
+            
+            // Dispatch cleanup to worker
+            let _ = self.eval_tx.send(EvalTask {
+                uri,
+                action: EvalAction::Clear,
+            });
         }
         Ok(())
     }
+
 
     fn handle_code_action(&self, connection: &Connection, id: RequestId, params: CodeActionParams) -> Result<(), Box<dyn Error + Sync + Send>> {
         let uri = params.text_document.uri.to_string();
@@ -324,9 +342,12 @@ impl Server {
                             // Dispatch to worker. Returns immediately.
                             let _ = self.eval_tx.send(EvalTask {
                                 uri: uri_str,
-                                content,
-                                request_id: id.clone(),
+                                action: EvalAction::Evaluate {
+                                    content,
+                                    request_id: id.clone(),
+                                },
                             });
+
                             // Acknowledge the request immediately. Results arrive
                             // via PublishDiagnostics and inlayHint/refresh notifications.
                             let resp = Response::new_ok(id, json!(null));

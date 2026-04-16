@@ -118,10 +118,12 @@ impl Evaluator {
 
     pub fn evaluate(&mut self, target_path: &PathBuf) -> Result<Vec<EvalResult>> {
         let content = std::fs::read_to_string(target_path)?;
-        self.evaluate_str(&content, None)
+        let uri = format!("file:///{}", target_path.to_string_lossy());
+        self.evaluate_str(&content, Some(&uri), None)
     }
 
-    pub fn evaluate_str(&mut self, content: &str, log: Option<&File>) -> Result<Vec<EvalResult>> {
+    pub fn evaluate_str(&mut self, content: &str, uri: Option<&str>, log: Option<&File>) -> Result<Vec<EvalResult>> {
+
         if let Some(mut file) = log {
             writeln!(file, "\n--- EVAL INPUT ---\n{}\n--- EVAL OUTPUT ---", content)?;
             file.flush()?;
@@ -134,8 +136,10 @@ impl Evaluator {
 
         let req = serde_json::json!({
             "type": "evaluate",
-            "content": content
+            "content": content,
+            "uri": uri
         });
+
         
         let mut line = serde_json::to_string(&req)?;
         line.push('\n');
@@ -197,6 +201,28 @@ impl Evaluator {
         }
 
         Ok(results)
+    }
+
+    pub fn clear_namespace(&mut self, uri: &str) -> Result<()> {
+        let state = self.ensure_alive()?;
+        let req = serde_json::json!({
+            "type": "clear-namespace",
+            "uri": uri
+        });
+        let mut line = serde_json::to_string(&req)?;
+        line.push('\n');
+        state.stdin.write_all(line.as_bytes())?;
+        state.stdin.flush()?;
+        
+        // Wait for READY to ensure the command was processed
+        loop {
+            let state = self.state.as_mut().unwrap();
+            let buffer = state.stdout_rx.recv_timeout(self.timeout)?;
+            if buffer.trim() == "READY" {
+                break;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -289,14 +315,40 @@ mod tests {
         evaluator.timeout = Duration::from_millis(500);
 
         // Infinite loop: (let loop () (loop))
-        let result = evaluator.evaluate_str("(let loop () (loop))", None);
+        let result = evaluator.evaluate_str("(let loop () (loop))", None, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("timed out"));
 
         // Verify recovery: subsequent evaluation should work (after restart)
         evaluator.timeout = Duration::from_secs(5);
-        let result = evaluator.evaluate_str("42", None).unwrap();
+        let result = evaluator.evaluate_str("42", None, None).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].result, "42");
+    }
+
+    #[test]
+    fn test_per_document_isolation() {
+        let mut shim_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        shim_path.push("src");
+        shim_path.push("eval-shim.rkt");
+        if !shim_path.exists() { return; }
+
+        let mut evaluator = Evaluator::new(shim_path).unwrap();
+        
+        // 1. Define x in doc A
+        let res_a1 = evaluator.evaluate_str("(define x 42)", Some("file:///a.rkt"), None).unwrap();
+        
+        // 2. Access x in doc A (should succeed)
+        let res_a2 = evaluator.evaluate_str("x", Some("file:///a.rkt"), None).unwrap();
+        assert_eq!(res_a2[0].result, "42");
+        
+        // 3. Access x in doc B (should fail)
+        let res_b1 = evaluator.evaluate_str("x", Some("file:///b.rkt"), None).unwrap();
+        assert!(res_b1[0].is_error, "x should be undefined in document B");
+        
+        // 4. Clear doc A and access x (should fail)
+        evaluator.clear_namespace("file:///a.rkt").unwrap();
+        let res_a3 = evaluator.evaluate_str("x", Some("file:///a.rkt"), None).unwrap();
+        assert!(res_a3[0].is_error, "x should be undefined in document A after clear");
     }
 }
