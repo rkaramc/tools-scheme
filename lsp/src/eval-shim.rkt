@@ -65,10 +65,11 @@
        (display-result start-line start-col end-line end-col 'void #f captured)])))
 
 ;; Persistent REPL logic
+(define document-namespaces (make-hash))
+
 (define (run-repl)
   (parameterize ([read-accept-reader #t]
-                 [read-accept-lang #t]
-                 [current-namespace (make-base-namespace)])
+                 [read-accept-lang #t])
     (let loop ()
       (define input (read-line))
       (unless (eof-object? input)
@@ -79,39 +80,50 @@
                                      (loop))])
           (let ([json-input (string->jsexpr input)])
             (define type (hash-ref json-input 'type))
-            (define content (hash-ref json-input 'content))
+            (define uri (hash-ref json-input 'uri #f))
             
             (cond
               [(string=? type "evaluate")
-               (evaluate-string-content content)]
+               (evaluate-string-content (hash-ref json-input 'content) uri)]
+              [(string=? type "clear-namespace")
+               (when uri
+                 (hash-remove! document-namespaces uri))]
               [else
                (eprintf "Unknown REPL command type: ~a\n" type)]))
           (displayln "READY" real-stdout)
           (flush-output real-stdout)
           (loop))))))
 
-(define (evaluate-string-content content)
+(define (evaluate-string-content content uri)
   (define port (open-input-string content))
   (port-count-lines! port)
-  (let loop ()
-    (define stx (read-syntax 'repl port))
-    (unless (eof-object? stx)
-      (with-handlers ([exn:fail? (lambda (e)
-                                   (define-values (l c end-c) (get-exn-location e stx 'repl))
-                                   (display-result l (or (syntax-column stx) 0) l end-c e #t "")
-                                   (loop))])
-        (define expanded (expand stx))
-        (syntax-case expanded (module)
-          [(module name lang (mb . body))
-           (let ([m-name (syntax-e #'name)])
-             (eval expanded)
-             (dynamic-require `(quote ,m-name) #f)
-             (define ns (module->namespace `(quote ,m-name)))
-             (for ([form (syntax->list #'body)])
-               (evaluate-single-form form ns 'repl)))]
-          [_
-           (evaluate-single-form stx (current-namespace) 'repl)])
-        (loop)))))
+  
+  (define ns
+    (if uri
+        (hash-ref! document-namespaces uri (lambda () (make-base-namespace)))
+        (current-namespace)))
+
+  (parameterize ([current-namespace ns])
+    (let loop ()
+      (define stx (read-syntax 'repl port))
+      (unless (eof-object? stx)
+        (with-handlers ([exn:fail? (lambda (e)
+                                     (define-values (l c end-c) (get-exn-location e stx 'repl))
+                                     (display-result l (or (syntax-column stx) 0) l end-c e #t "")
+                                     (loop))])
+          (define expanded (expand stx))
+          (syntax-case expanded (module)
+            [(module name lang (mb . body))
+             (let ([m-name (syntax-e #'name)])
+               (eval expanded)
+               (dynamic-require `(quote ,m-name) #f)
+               (define ns (module->namespace `(quote ,m-name)))
+               (for ([form (syntax->list #'body)])
+                 (evaluate-single-form form ns 'repl)))]
+            [_
+             (evaluate-single-form stx (current-namespace) 'repl)])
+          (loop))))))
+
 
 
 (define file-content-cache (make-hash))
