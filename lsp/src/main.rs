@@ -14,6 +14,8 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::error::Error;
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+use std::sync::mpsc;
 
 mod coordinates;
 mod documents;
@@ -25,11 +27,23 @@ use documents::DocumentStore;
 use evaluator::{EvalResult, Evaluator};
 use parser::Parser;
 
-struct Server {
-    evaluator: Evaluator,
-    parser: Parser,
+/// State shared between the main loop and the eval worker thread.
+struct SharedState {
     results: HashMap<String, Vec<EvalResult>>,
     document_store: DocumentStore,
+}
+
+/// A request to evaluate Scheme content, dispatched to the worker thread.
+struct EvalTask {
+    uri: String,
+    /// Snapshot of document content taken at dispatch time.
+    content: String,
+}
+
+struct Server {
+    eval_tx: mpsc::SyncSender<EvalTask>,
+    state: Arc<RwLock<SharedState>>,
+    parser: Parser,
 }
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
@@ -85,20 +99,135 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
     let _initialization_params = connection.initialize(server_capabilities)?;
 
-    let server_evaluator = Evaluator::new(shim_path)
+    let evaluator = Evaluator::new(shim_path)
         .map_err(|e| format!("Failed to initialize evaluator: {}", e))?;
 
-    let mut server = Server {
-        evaluator: server_evaluator,
-        parser: Parser::new(),
+    let state = Arc::new(RwLock::new(SharedState {
         results: HashMap::new(),
         document_store: DocumentStore::new(),
+    }));
+
+    // Channel capacity of 1: the worker processes one task at a time. A second
+    // send while one is in-flight will block the main loop briefly until the
+    // slot is free — acceptable, since evaluation is user-initiated.
+    let (eval_tx, eval_rx) = mpsc::sync_channel::<EvalTask>(1);
+
+    // Spawn the eval worker. It owns the Evaluator (and thus the Racket REPL
+    // child process) and is the only thread that ever calls into it.
+    let worker_state = Arc::clone(&state);
+    let worker_sender = connection.sender.clone();
+    std::thread::spawn(move || {
+        eval_worker(evaluator, eval_rx, worker_state, move |msg| {
+            worker_sender.send(msg).map_err(|e| format!("send error: {}", e).into())
+        });
+    });
+
+    let mut server = Server {
+        eval_tx,
+        state,
+        parser: Parser::new(),
     };
 
     server.main_loop(&connection)?;
     io_threads.join()?;
 
     Ok(())
+}
+
+/// Background thread: receives EvalTask, evaluates, updates SharedState, sends notifications.
+fn eval_worker<S>(
+    mut evaluator: Evaluator,
+    rx: mpsc::Receiver<EvalTask>,
+    state: Arc<RwLock<SharedState>>,
+    sender: S,
+)
+where
+    S: Fn(Message) -> Result<(), Box<dyn Error + Sync + Send>> + Send + 'static,
+{
+    for task in rx {
+        let eval_results = evaluator.evaluate_str(&task.content);
+
+        let uri_str = task.uri.clone();
+        let uri = match lsp_types::Url::parse(&uri_str) {
+            Ok(u) => u,
+            Err(_) => continue,
+        };
+
+        match eval_results {
+            Ok(results) => {
+                // Build diagnostics while we still have the results in hand,
+                // before acquiring the write lock.
+                let diagnostics: Vec<Diagnostic> = {
+                    let state_read = state.read().unwrap();
+                    let doc = state_read.document_store.get(&uri_str);
+                    results
+                        .iter()
+                        .filter(|r| r.is_error)
+                        .map(|res| {
+                            let lsp_line = res.line.saturating_sub(1);
+                            let (start_col, end_col) = match doc {
+                                Some(d) => (
+                                    d.line_index.code_point_to_utf16(&d.text, lsp_line as usize, res.col as usize),
+                                    d.line_index.code_point_to_utf16(&d.text, lsp_line as usize, res.end_col as usize),
+                                ),
+                                None => (res.col, res.end_col),
+                            };
+                            Diagnostic {
+                                range: Range::new(
+                                    Position::new(lsp_line, start_col),
+                                    Position::new(lsp_line, end_col),
+                                ),
+                                severity: Some(DiagnosticSeverity::ERROR),
+                                message: res.result.clone(),
+                                ..Default::default()
+                            }
+                        })
+                        .collect()
+                };
+
+                // Store results.
+                state.write().unwrap().results.insert(uri_str.clone(), results);
+
+                // Publish diagnostics.
+                let diag_params = PublishDiagnosticsParams {
+                    uri: uri.clone(),
+                    diagnostics,
+                    version: None,
+                };
+                let not = lsp_server::Notification::new(
+                    PublishDiagnostics::METHOD.to_string(),
+                    diag_params,
+                );
+                let _ = sender(Message::Notification(not));
+
+                // Ask the client to refresh inlay hints.
+                let refresh_req = Request::new(
+                    RequestId::from(999),
+                    "workspace/inlayHint/refresh".to_string(),
+                    json!(null),
+                );
+                let _ = sender(Message::Request(refresh_req));
+            }
+            Err(e) => {
+                // Send an error notification via diagnostics so the user sees it.
+                let diag_params = PublishDiagnosticsParams {
+                    uri,
+                    diagnostics: vec![Diagnostic {
+                        range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+                        severity: Some(DiagnosticSeverity::ERROR),
+                        message: format!("Evaluation error: {}", e),
+                        ..Default::default()
+                    }],
+                    version: None,
+                };
+                let not = lsp_server::Notification::new(
+                    PublishDiagnostics::METHOD.to_string(),
+                    diag_params,
+                );
+                let _ = sender(Message::Notification(not));
+            }
+        }
+    }
 }
 
 impl Server {
@@ -135,17 +264,18 @@ impl Server {
 
     fn handle_notification(&mut self, not: lsp_server::Notification) -> Result<(), Box<dyn Error + Sync + Send>> {
         if let Some(params) = cast_notification::<DidOpenTextDocument>(&not) {
-            self.document_store.open(params.text_document);
+            self.state.write().unwrap().document_store.open(params.text_document);
         } else if let Some(params) = cast_notification::<DidChangeTextDocument>(&not) {
-            self.document_store.change(
+            self.state.write().unwrap().document_store.change(
                 params.text_document.uri.as_ref(),
                 params.text_document.version,
                 params.content_changes,
             );
         } else if let Some(params) = cast_notification::<DidCloseTextDocument>(&not) {
             let uri = params.text_document.uri.to_string();
-            self.document_store.close(&uri);
-            self.results.remove(&uri);
+            let mut state = self.state.write().unwrap();
+            state.document_store.close(&uri);
+            state.results.remove(&uri);
         }
         Ok(())
     }
@@ -167,83 +297,44 @@ impl Server {
         if params.command == "scheme.evaluate" || params.command == "scheme.evaluateSelection" {
             if let Some(arg) = params.arguments.first() {
                 if let Some(uri_str) = arg.as_str() {
-                    let uri = lsp_types::Url::parse(uri_str)?;
-                    
-                    let eval_results = if params.command == "scheme.evaluateSelection" {
-                        if let Some(text_arg) = params.arguments.get(1) {
-                            if let Some(selected_text) = text_arg.as_str() {
-                                self.evaluator.evaluate_str(selected_text)
-                            } else {
-                                Err(anyhow::anyhow!("Invalid text argument for evaluateSelection"))
-                            }
-                        } else {
-                            Err(anyhow::anyhow!("Missing text argument for evaluateSelection"))
-                        }
-                    } else if let Some(doc) = self.document_store.get(uri_str) {
-                        self.evaluator.evaluate_str(&doc.text)
-                    } else if let Ok(path) = uri.to_file_path() {
-                        self.evaluator.evaluate(&path)
+                    let uri_str = uri_str.to_string();
+                    let uri = lsp_types::Url::parse(&uri_str)?;
+
+                    // Snapshot the content to evaluate at dispatch time.
+                    let content_snapshot = if params.command == "scheme.evaluateSelection" {
+                        params.arguments.get(1)
+                            .and_then(|a| a.as_str())
+                            .map(|s| s.to_string())
                     } else {
-                        Err(anyhow::anyhow!("Could not find file or buffer content"))
+                        let state = self.state.read().unwrap();
+                        state.document_store.get(&uri_str)
+                            .map(|d| d.text.clone())
+                            .or_else(|| uri.to_file_path().ok()
+                                .and_then(|p| std::fs::read_to_string(p).ok()))
                     };
 
-                    match eval_results {
-                        Ok(eval_results) => {
-                            self.results.insert(uri_str.to_string(), eval_results.clone());
-                            
-                            let mut diagnostics = Vec::new();
-                            let doc_for_diag = self.document_store.get(uri_str);
-                            for res in &eval_results {
-                                if res.is_error {
-                                    let lsp_line = res.line.saturating_sub(1);
-                                    let (start_col, end_col) = match doc_for_diag {
-                                        Some(d) => (
-                                            d.line_index.code_point_to_utf16(&d.text, lsp_line as usize, res.col as usize),
-                                            d.line_index.code_point_to_utf16(&d.text, lsp_line as usize, res.end_col as usize),
-                                        ),
-                                        None => (res.col, res.end_col),
-                                    };
-                                    diagnostics.push(Diagnostic {
-                                        range: Range::new(
-                                            Position::new(lsp_line, start_col),
-                                            Position::new(lsp_line, end_col),
-                                        ),
-                                        severity: Some(DiagnosticSeverity::ERROR),
-                                        message: res.result.clone(),
-                                        ..Default::default()
-                                    });
-                                }
-                            }
-                            let params = PublishDiagnosticsParams {
-                                uri: uri.clone(),
-                                diagnostics,
-                                version: None,
-                            };
-                            let not = lsp_server::Notification::new(
-                                PublishDiagnostics::METHOD.to_string(),
-                                params,
-                            );
-                            connection.sender.send(Message::Notification(not))?;
-
-                            // Send a request to refresh inlay hints
-                            let refresh_req = Request::new(
-                                RequestId::from(999),
-                                "workspace/inlayHint/refresh".to_string(),
-                                json!(null),
-                            );
-                            connection.sender.send(Message::Request(refresh_req))?;
-
-                            // Return the evaluation results
-                            let resp = Response::new_ok(id, json!(eval_results));
+                    match content_snapshot {
+                        Some(content) => {
+                            // Dispatch to worker. Returns immediately.
+                            let _ = self.eval_tx.send(EvalTask {
+                                uri: uri_str,
+                                content,
+                            });
+                            // Acknowledge the request immediately. Results arrive
+                            // via PublishDiagnostics and inlayHint/refresh notifications.
+                            let resp = Response::new_ok(id, json!(null));
                             connection.sender.send(Message::Response(resp))?;
-                            return Ok(());
                         }
-                        Err(e) => {
-                            let resp = Response::new_err(id, lsp_server::ErrorCode::InternalError as i32, format!("Evaluation error: {}", e));
+                        None => {
+                            let resp = Response::new_err(
+                                id,
+                                lsp_server::ErrorCode::InvalidParams as i32,
+                                "Could not find file or buffer content".to_string(),
+                            );
                             connection.sender.send(Message::Response(resp))?;
-                            return Ok(());
                         }
                     }
+                    return Ok(());
                 }
             }
         }
@@ -254,15 +345,15 @@ impl Server {
 
     fn handle_inlay_hints(&self, connection: &Connection, id: RequestId, params: InlayHintParams) -> Result<(), Box<dyn Error + Sync + Send>> {
         let uri = params.text_document.uri.to_string();
-        let mut hints = Vec::new();
-
-        if let Some(results) = self.results.get(&uri) {
-            let doc = self.document_store.get(&uri);
+        let state = self.state.read().unwrap();
+        let hints = if let Some(results) = state.results.get(&uri) {
+            let doc = state.document_store.get(&uri);
             let doc_text = doc.map(|d| d.text.as_str());
             let line_index = doc.map(|d| &d.line_index);
-            hints = inlay_hints::results_to_hints(results, line_index, doc_text);
-        }
-
+            inlay_hints::results_to_hints(results, line_index, doc_text)
+        } else {
+            Vec::new()
+        };
         let resp = Response::new_ok(id, Some(hints));
         connection.sender.send(Message::Response(resp))?;
         Ok(())
@@ -270,16 +361,17 @@ impl Server {
 
     fn handle_code_lens(&self, connection: &Connection, id: RequestId, params: CodeLensParams) -> Result<(), Box<dyn Error + Sync + Send>> {
         let uri_str = params.text_document.uri.to_string();
+        let state = self.state.read().unwrap();
         let mut lenses = Vec::new();
 
-        if let Some(doc) = self.document_store.get(&uri_str) {
+        if let Some(doc) = state.document_store.get(&uri_str) {
             let ranges = self.parser.find_top_level_expressions(&doc.text);
             for range in ranges {
                 let start_idx = doc.line_index.lsp_position_to_byte(&doc.text, range.start);
                 let end_idx = doc.line_index.lsp_position_to_byte(&doc.text, range.end);
                 // Clamp to text length
                 let end_idx = end_idx.min(doc.text.len());
-                
+
                 let selected_text = if start_idx < end_idx {
                     &doc.text[start_idx..end_idx]
                 } else {
@@ -291,7 +383,7 @@ impl Server {
                     command: "scheme.evaluateSelection".to_string(),
                     arguments: Some(vec![json!(uri_str), json!(selected_text)]),
                 };
-                
+
                 lenses.push(CodeLens {
                     range,
                     command: Some(cmd),

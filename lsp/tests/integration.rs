@@ -46,27 +46,37 @@ fn test_lsp_eval_integration() {
     write!(stdin, "Content-Length: {}\r\n\r\n{}", did_open.len(), did_open).unwrap();
     stdin.flush().unwrap();
 
-    // 4. executeCommand
+    // 4. executeCommand — evaluation is async.
+    // The immediate response has "result":null.
+    // Results arrive later via textDocument/publishDiagnostics and workspace/inlayHint/refresh.
     let exec_cmd = r#"{"jsonrpc":"2.0","id":2,"method":"workspace/executeCommand","params":{"command":"scheme.evaluate","arguments":["file:///test.rkt"]}}"#;
     write!(stdin, "Content-Length: {}\r\n\r\n{}", exec_cmd.len(), exec_cmd).unwrap();
     stdin.flush().unwrap();
 
-    // Read response for executeCommand
-    let mut found_result = false;
-    for _ in 0..10 {
+    // Collect up to 15 messages looking for:
+    //   (a) the immediate null ack for id:2
+    //   (b) the publishDiagnostics notification from the worker
+    let mut found_ack = false;
+    let mut found_diag = false;
+    for _ in 0..15 {
         let body = read_message(&mut reader);
         if body.contains("\"id\":2") {
-            // The command response should contain the results as a list
-            assert!(body.contains("\"result\":["));
-            assert!(body.contains("\"result\":\"3\""));
-            found_result = true;
+            // Immediate ack must be null (async — results come later)
+            assert!(body.contains("\"result\":null"), "Expected null ack, got: {}", body);
+            found_ack = true;
+        }
+        if body.contains("textDocument/publishDiagnostics") {
+            found_diag = true;
+        }
+        if found_ack && found_diag {
             break;
         }
     }
-    assert!(found_result, "Did not find executeCommand response for test.rkt");
+    assert!(found_ack, "Did not receive null ack for executeCommand id:2");
+    assert!(found_diag, "Did not receive publishDiagnostics notification after evaluation");
 
     // 5. didOpen with #lang racket
-    let lang_file = "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file:///lang.rkt\",\"languageId\":\"racket\",\"version\":1,\"text\":\"#lang racket\\n(define y 100)\\n(+ y 20)\"}}}";
+    let lang_file = r##"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///lang.rkt","languageId":"racket","version":1,"text":"#lang racket\n(define y 100)\n(+ y 20)"}}}"##;
     write!(stdin, "Content-Length: {}\r\n\r\n{}", lang_file.len(), lang_file).unwrap();
     stdin.flush().unwrap();
 
@@ -75,16 +85,23 @@ fn test_lsp_eval_integration() {
     write!(stdin, "Content-Length: {}\r\n\r\n{}", exec_lang.len(), exec_lang).unwrap();
     stdin.flush().unwrap();
 
-    let mut found_lang_result = false;
-    for _ in 0..10 {
+    let mut found_lang_ack = false;
+    let mut found_lang_diag = false;
+    for _ in 0..15 {
         let body = read_message(&mut reader);
         if body.contains("\"id\":3") {
-            assert!(body.contains("\"result\":\"120\""));
-            found_lang_result = true;
+            assert!(body.contains("\"result\":null"), "Expected null ack, got: {}", body);
+            found_lang_ack = true;
+        }
+        if body.contains("textDocument/publishDiagnostics") && body.contains("lang.rkt") {
+            found_lang_diag = true;
+        }
+        if found_lang_ack && found_lang_diag {
             break;
         }
     }
-    assert!(found_lang_result, "Did not find executeCommand response for #lang file");
+    assert!(found_lang_ack, "Did not receive null ack for executeCommand id:3");
+    assert!(found_lang_diag, "Did not receive publishDiagnostics for #lang file");
 
     child.kill().unwrap();
 }
