@@ -114,12 +114,11 @@
 
 
 (define file-content-cache (make-hash))
-(define (get-normalized-content path)
+(define (get-file-content path)
   (if (symbol? path)
       "" ;; No content for REPL symbols
       (hash-ref! file-content-cache path
-                 (lambda ()
-                   (string-replace (file->string path) "\r\n" "\n")))))
+                 (lambda () (file->string path)))))
 
 (define (get-exn-location e stx target-path)
   (let ([loc (and (exn:srclocs? e) 
@@ -136,7 +135,7 @@
         [line (syntax-line stx)]
         [col (syntax-column stx)])
     (if (and (not (symbol? target-path)) pos span line col)
-        (let ([p (open-input-string (get-normalized-content target-path))])
+        (let ([p (open-input-string (get-file-content target-path))])
           (port-count-lines! p)
           (file-position p (- pos 1))
           (set-port-next-location! p line col pos)
