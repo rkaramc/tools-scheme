@@ -159,25 +159,27 @@ fn eval_worker(
                     results
                         .iter()
                         .filter(|r| r.is_error)
-                        .map(|res| {
-                            let lsp_line = res.line.saturating_sub(1);
-                            let (start_col, end_col) = match doc {
-                                Some(d) => (
-                                    d.line_index.code_point_to_utf16(&d.text, lsp_line as usize, res.col as usize),
-                                    d.line_index.code_point_to_utf16(&d.text, lsp_line as usize, res.end_col as usize),
-                                ),
-                                None => (res.col, res.end_col),
-                            };
-                            Diagnostic {
-                                range: Range::new(
-                                    Position::new(lsp_line, start_col),
-                                    Position::new(lsp_line, end_col),
-                                ),
-                                severity: Some(DiagnosticSeverity::ERROR),
-                                message: res.result.clone(),
-                                ..Default::default()
-                            }
-                        })
+                                .map(|res| {
+                                    let lsp_start_line = res.line.saturating_sub(1);
+                                    let lsp_end_line = if res.end_line > 0 { res.end_line.saturating_sub(1) } else { lsp_start_line };
+                                    
+                                    let (start_col, end_col) = match doc {
+                                        Some(d) => (
+                                            d.line_index.code_point_to_utf16(&d.text, lsp_start_line as usize, res.col as usize),
+                                            d.line_index.code_point_to_utf16(&d.text, lsp_end_line as usize, res.end_col as usize),
+                                        ),
+                                        None => (res.col, res.end_col),
+                                    };
+                                    Diagnostic {
+                                        range: Range::new(
+                                            Position::new(lsp_start_line, start_col),
+                                            Position::new(lsp_end_line, end_col),
+                                        ),
+                                        severity: Some(DiagnosticSeverity::ERROR),
+                                        message: res.result.clone(),
+                                        ..Default::default()
+                                    }
+                                })
                         .collect()
                 };
 

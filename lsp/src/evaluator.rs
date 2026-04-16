@@ -9,6 +9,8 @@ pub struct EvalResult {
     pub line: u32,
     pub col: u32,
     #[serde(default)]
+    pub end_line: u32,
+    #[serde(default)]
     pub end_col: u32,
     pub result: String,
     pub is_error: bool,
@@ -116,16 +118,17 @@ mod tests {
 
     #[test]
     fn test_parse_json_result() {
-        let json = r#"{"line":1,"col":10,"result":"42","is_error":false,"output":""}"#;
+        let json = r#"{"line":1,"col":10,"end_line":1,"end_col":12,"result":"42","is_error":false,"output":""}"#;
         let res: EvalResult = serde_json::from_str(json).unwrap();
         assert_eq!(res.line, 1);
+        assert_eq!(res.end_line, 1);
         assert_eq!(res.result, "42");
         assert!(!res.is_error);
     }
 
     #[test]
     fn test_parse_output_success() {
-        let json = r#"{"line":1,"col":10,"result":"42","is_error":false,"output":""}"#;
+        let json = r#"{"line":1,"col":10,"end_line":1,"end_col":12,"result":"42","is_error":false,"output":""}"#;
         let results = parse_output(json.as_bytes()).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].line, 1);
@@ -135,7 +138,7 @@ mod tests {
 
     #[test]
     fn test_parse_output_error() {
-        let json = r#"{"line":5,"col":5,"result":"division by zero","is_error":true,"output":""}"#;
+        let json = r#"{"line":5,"col":5,"end_line":5,"end_col":10,"result":"division by zero","is_error":true,"output":""}"#;
         let results = parse_output(json.as_bytes()).unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].is_error);
@@ -144,7 +147,7 @@ mod tests {
 
     #[test]
     fn test_parse_output_multiple() {
-        let json = "{\"line\":1,\"col\":5,\"result\":\"1\",\"is_error\":false,\"output\":\"\"}\n{\"line\":2,\"col\":5,\"result\":\"2\",\"is_error\":false,\"output\":\"\"}";
+        let json = "{\"line\":1,\"col\":5,\"end_line\":1,\"end_col\":10,\"result\":\"1\",\"is_error\":false,\"output\":\"\"}\n{\"line\":2,\"col\":5,\"end_line\":2,\"end_col\":10,\"result\":\"2\",\"is_error\":false,\"output\":\"\"}";
         let results = parse_output(json.as_bytes()).unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].result, "1");

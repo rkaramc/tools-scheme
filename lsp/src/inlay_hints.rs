@@ -20,9 +20,9 @@ pub fn results_to_hints(results: &[EvalResult], line_index: Option<&LineIndex>, 
             let has_extra_output = !res.output.is_empty() && result_trimmed != output_trimmed;
 
             let label = if has_extra_output {
-                format!(" => {} 📝", display_val)
+                format!("  => {} 📝", display_val)
             } else {
-                format!(" => {}", display_val)
+                format!("  => {}", display_val)
             };
             
             let tooltip = if has_extra_output {
@@ -30,21 +30,21 @@ pub fn results_to_hints(results: &[EvalResult], line_index: Option<&LineIndex>, 
             } else {
                 None
             };
-
-            // Convert Racket's code-point column to LSP's UTF-16 column.
-            let lsp_line = res.line.saturating_sub(1);
+ 
+            // Convert Racket's code-point column to LSP's UTF-16 column at the END of the expression.
+            let lsp_end_line = if res.end_line > 0 { res.end_line.saturating_sub(1) } else { res.line.saturating_sub(1) };
             let utf16_col = match (line_index, doc_text) {
-                (Some(idx), Some(text)) => idx.code_point_to_utf16(text, lsp_line as usize, res.col as usize),
-                _ => res.col,
+                (Some(idx), Some(text)) => idx.code_point_to_utf16(text, lsp_end_line as usize, res.end_col as usize),
+                _ => res.end_col,
             };
-
+ 
             InlayHint {
-                position: Position::new(lsp_line, utf16_col),
+                position: Position::new(lsp_end_line, utf16_col),
                 label: InlayHintLabel::String(label),
                 kind: Some(InlayHintKind::PARAMETER),
                 text_edits: None,
                 tooltip,
-                padding_left: Some(true),
+                padding_left: Some(false), // Matches suffix style better
                 padding_right: None,
                 data: None,
             }
@@ -63,6 +63,7 @@ mod tests {
             EvalResult {
                 line: 1,
                 col: 5,
+                end_line: 1,
                 end_col: 6,
                 result: "10".to_string(),
                 is_error: false,
@@ -72,7 +73,7 @@ mod tests {
         let hints = results_to_hints(&results, None, None);
         assert_eq!(hints.len(), 1);
         if let InlayHintLabel::String(label) = &hints[0].label {
-            assert_eq!(label, " => 10"); // No notebook icon
+            assert_eq!(label, "  => 10"); // No notebook icon
         }
         assert!(hints[0].tooltip.is_none());
     }
@@ -83,6 +84,7 @@ mod tests {
             EvalResult {
                 line: 1,
                 col: 5,
+                end_line: 1,
                 end_col: 6,
                 result: "other".to_string(),
                 is_error: false,
@@ -92,7 +94,7 @@ mod tests {
         let hints = results_to_hints(&results, None, None);
         assert_eq!(hints.len(), 1);
         if let InlayHintLabel::String(label) = &hints[0].label {
-            assert_eq!(label, " => other 📝"); // Includes notebook icon
+            assert_eq!(label, "  => other 📝"); // Includes notebook icon
         }
         assert!(hints[0].tooltip.is_some());
     }
@@ -103,6 +105,7 @@ mod tests {
             EvalResult {
                 line: 1,
                 col: 5,
+                end_line: 1,
                 end_col: 6,
                 result: "void".to_string(),
                 is_error: false,
@@ -112,7 +115,7 @@ mod tests {
         let hints = results_to_hints(&results, None, None);
         assert_eq!(hints.len(), 1);
         if let InlayHintLabel::String(label) = &hints[0].label {
-            assert_eq!(label, " => hello world 📝"); // Shows output instead of 'void', and has extra lines
+            assert_eq!(label, "  => hello world 📝"); // Shows output instead of 'void', and has extra lines
         }
     }
 }
