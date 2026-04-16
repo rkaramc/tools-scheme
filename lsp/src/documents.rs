@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use lsp_types::{TextDocumentItem, TextDocumentContentChangeEvent};
+use crate::coordinates::LineIndex;
 
 #[derive(Debug, Clone)]
 pub struct Document {
-    pub _uri: String,
-    pub _language_id: String,
     pub version: i32,
     pub text: String,
+    pub line_index: LineIndex,
 }
 
 pub struct DocumentStore {
@@ -21,13 +21,13 @@ impl DocumentStore {
     }
 
     pub fn open(&mut self, item: TextDocumentItem) {
+        let line_index = LineIndex::new(&item.text);
         self.documents.insert(
             item.uri.to_string(),
             Document {
-                _uri: item.uri.to_string(),
-                _language_id: item.language_id,
                 version: item.version,
                 text: item.text,
+                line_index,
             },
         );
     }
@@ -37,6 +37,7 @@ impl DocumentStore {
             doc.version = version;
             // Since we currently use FULL sync, the last change contains the full text.
             if let Some(change) = changes.into_iter().last() {
+                doc.line_index = LineIndex::new(&change.text);
                 doc.text = change.text;
             }
         }
