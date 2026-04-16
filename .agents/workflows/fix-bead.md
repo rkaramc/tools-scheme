@@ -1,0 +1,13 @@
+---
+description: Prompt to fix an issue from the beads issue tracker
+---
+
+Skills are in ~/.gemini/antigravity/global_skills folder.
+enable using-agent-skills.
+enable karpathy-guidelines.
+enable beads-tracking.
+enable jj-vcs.
+
+investigate and explain problem. explain solution. plan implementation using tdd. start with a new changeset. review code after implementation. teach me!
+
+Issue number is:

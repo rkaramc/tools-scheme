@@ -11,9 +11,23 @@ import {
 let client: LanguageClient;
 let outputChannel: vscode.OutputChannel;
 let tempServerPath: string | undefined;
-let originalServerPath: string;
-let currentShimPath: string;
+let originalServerPath: string | undefined;
+let currentShimPath: string | undefined;
 let lspWatcher: fs.FSWatcher | undefined;
+
+/**
+ * Searches for a binary in the system PATH.
+ */
+function findInPath(binaryName: string): string | undefined {
+    const paths = (process.env.PATH || process.env.Path || '').split(path.delimiter);
+    for (const p of paths) {
+        const fullPath = path.join(p, binaryName);
+        if (fs.existsSync(fullPath)) {
+            return fullPath;
+        }
+    }
+    return undefined;
+}
 
 export function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel('Scheme Toolbox');
@@ -24,28 +38,39 @@ export function activate(context: vscode.ExtensionContext) {
     const customShimPath = config.get<string>('shimPath');
     const envLspDir = process.env.TOOLS_SCHEME_LSP_PATH;
 
-    // Determine the path to the LSP binary
+    // 1. Determine the path to the LSP binary
+    const binName = process.platform === 'win32' ? 'scheme-toolbox-lsp.exe' : 'scheme-toolbox-lsp';
     let serverPath = customLspPath;
+
     if (!serverPath && envLspDir) {
-        const binName = process.platform === 'win32' ? 'scheme-toolbox-lsp.exe' : 'scheme-toolbox-lsp';
         const envPath = path.join(envLspDir, binName);
         if (fs.existsSync(envPath)) {
             serverPath = envPath;
         }
     }
+
     if (!serverPath) {
-        serverPath = context.asAbsolutePath(path.join(
-            '..',
-            '..',
-            'target',
-            'debug',
-            process.platform === 'win32' ? 'scheme-toolbox-lsp.exe' : 'scheme-toolbox-lsp'
-        ));
+        serverPath = findInPath(binName);
+    }
+
+    if (!serverPath && context.extensionMode === vscode.ExtensionMode.Development) {
+        const devPath = context.asAbsolutePath(path.join('..', '..', 'target', 'debug', binName));
+        if (fs.existsSync(devPath)) {
+            serverPath = devPath;
+            outputChannel.appendLine(`Using development LSP fallback: ${serverPath}`);
+        }
+    }
+
+    if (!serverPath) {
+        const msg = 'Scheme Toolbox: Could not find "scheme-toolbox-lsp" binary. Please install it on your PATH or set "scheme.lspPath" in settings.';
+        outputChannel.appendLine(msg);
+        vscode.window.showErrorMessage(msg);
+        return;
     }
 
     originalServerPath = serverPath;
 
-    // Determine the path to the Racket shim
+    // 2. Determine the path to the Racket shim
     let shimPath = customShimPath;
     if (!shimPath && envLspDir) {
         const envPath = path.join(envLspDir, 'eval-shim.rkt');
@@ -53,17 +78,30 @@ export function activate(context: vscode.ExtensionContext) {
             shimPath = envPath;
         }
     }
-    if (!shimPath) {
-        shimPath = context.asAbsolutePath(path.join(
-            '..',
-            '..',
-            'lsp',
-            'src',
-            'eval-shim.rkt'
-        ));
-    }
-    currentShimPath = shimPath;
 
+    if (!shimPath && context.extensionMode === vscode.ExtensionMode.Development) {
+        const devPath = context.asAbsolutePath(path.join('..', '..', 'lsp', 'src', 'eval-shim.rkt'));
+        if (fs.existsSync(devPath)) {
+            shimPath = devPath;
+        }
+    }
+
+    // Default to the same directory as the LSP if not found elsewhere (standard install layout)
+    if (!shimPath && originalServerPath) {
+        const binDir = path.dirname(originalServerPath);
+        const localShim = path.join(binDir, 'eval-shim.rkt');
+        if (fs.existsSync(localShim)) {
+            shimPath = localShim;
+        }
+    }
+
+    if (!shimPath) {
+        const msg = 'Scheme Toolbox: Could not find "eval-shim.rkt". Please set "scheme.shimPath" in settings.';
+        outputChannel.appendLine(msg);
+        // We don't return here yet as ts-0dt might make this optional, but we warn.
+    }
+
+    currentShimPath = shimPath;
     startClient(context);
 
     // Watch the original LSP binary for changes
@@ -161,6 +199,7 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 function startClient(context: vscode.ExtensionContext) {
+    if (!originalServerPath) { return; }
     let serverPath = originalServerPath;
 
     // On Windows, copy the executable to a temporary location to avoid locking the original
@@ -188,7 +227,7 @@ function startClient(context: vscode.ExtensionContext) {
 
     const serverOptions: ServerOptions = {
         command: serverPath,
-        args: [currentShimPath], // Pass shim path as first argument
+        args: currentShimPath ? [currentShimPath] : [],
     };
 
     const clientOptions: LanguageClientOptions = {
@@ -223,6 +262,7 @@ function startClient(context: vscode.ExtensionContext) {
 }
 
 async function restartClient() {
+    if (!originalServerPath) { return; }
     outputChannel.appendLine('Restarting LSP client...');
     
     // 1. Prepare new binary (on Windows)
@@ -256,7 +296,7 @@ async function restartClient() {
     // But re-creating the client is safer for path changes.
     const serverOptions: ServerOptions = {
         command: newServerPath,
-        args: [currentShimPath],
+        args: currentShimPath ? [currentShimPath] : [],
     };
 
     const clientOptions: LanguageClientOptions = {
