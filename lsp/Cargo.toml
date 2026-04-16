@@ -15,6 +15,7 @@ serde_json = "1.0"
 anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+crossbeam-channel = "0.5.15"
 
 [profile.release]
 opt-level = 3
