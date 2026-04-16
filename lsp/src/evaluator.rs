@@ -21,10 +21,14 @@ pub struct EvalResult {
     pub output: String,
 }
 
-pub struct Evaluator {
+struct ProcessState {
+    child: Child,
     stdin: ChildStdin,
     stdout_rx: Receiver<String>,
-    child: Child,
+}
+
+pub struct Evaluator {
+    state: Option<ProcessState>,
     path: PathBuf,
     timeout: Duration,
     global_session: std::fs::File,
@@ -43,19 +47,17 @@ impl Evaluator {
             .unwrap_or(15);
         let timeout = Duration::from_secs(timeout_secs);
 
-        let (stdin, stdout_rx, child) = Self::spawn_process(&shim_path, &global_session)?;
+        let state = Self::spawn_process(&shim_path, &global_session)?;
 
         Ok(Self {
-            stdin,
-            stdout_rx,
-            child,
+            state: Some(state),
             path: shim_path,
             timeout,
             global_session,
         })
     }
 
-    fn spawn_process(shim_path: &PathBuf, session_file: &File) -> Result<(ChildStdin, Receiver<String>, Child)> {
+    fn spawn_process(shim_path: &PathBuf, session_file: &File) -> Result<ProcessState> {
         let mut child = Command::new("racket")
             .arg(shim_path)
             .arg("--repl")
@@ -83,23 +85,35 @@ impl Evaluator {
             }
         });
 
-        Ok((stdin, rx, child))
+        Ok(ProcessState {
+            child,
+            stdin,
+            stdout_rx: rx,
+        })
     }
 
-    fn ensure_alive(&mut self) -> Result<()> {
-        let is_dead = match self.child.try_wait() {
-            Ok(Some(_)) => true,
-            Ok(None) => false,
-            Err(_) => true,
+    fn ensure_alive(&mut self) -> Result<&mut ProcessState> {
+        let needs_restart = match &mut self.state {
+            Some(state) => {
+                match state.child.try_wait() {
+                    Ok(Some(_)) => true,
+                    Ok(None) => false,
+                    Err(_) => true,
+                }
+            }
+            None => true,
         };
 
-        if is_dead {
-            let (stdin, stdout_rx, child) = Self::spawn_process(&self.path, &self.global_session)?;
-            self.stdin = stdin;
-            self.stdout_rx = stdout_rx;
-            self.child = child;
+        if needs_restart {
+            // Drop old state explicitly (kills process via Drop if implemented, or we do it here)
+            if let Some(mut old_state) = self.state.take() {
+                let _ = old_state.child.kill();
+                let _ = old_state.child.wait();
+            }
+            self.state = Some(Self::spawn_process(&self.path, &self.global_session)?);
         }
-        Ok(())
+        
+        Ok(self.state.as_mut().unwrap())
     }
 
     pub fn evaluate(&mut self, target_path: &PathBuf) -> Result<Vec<EvalResult>> {
@@ -108,8 +122,6 @@ impl Evaluator {
     }
 
     pub fn evaluate_str(&mut self, content: &str, log: Option<&File>) -> Result<Vec<EvalResult>> {
-        self.ensure_alive()?;
-
         if let Some(mut file) = log {
             writeln!(file, "\n--- EVAL INPUT ---\n{}\n--- EVAL OUTPUT ---", content)?;
             file.flush()?;
@@ -117,6 +129,8 @@ impl Evaluator {
             writeln!(&mut self.global_session, "\n--- EVAL INPUT (NO LOG) ---\n{}\n--- EVAL OUTPUT ---", content)?;
             self.global_session.flush()?;
         }
+
+        let state = self.ensure_alive()?;
 
         let req = serde_json::json!({
             "type": "evaluate",
@@ -126,25 +140,40 @@ impl Evaluator {
         let mut line = serde_json::to_string(&req)?;
         line.push('\n');
         
-        if self.stdin.write_all(line.as_bytes()).is_err() {
-            // If pipe is broken, try restarting and retrying once
-            self.child.kill()?;
-            self.ensure_alive()?;
-            self.stdin.write_all(line.as_bytes())?;
+        let mut retry = false;
+        if state.stdin.write_all(line.as_bytes()).is_err() {
+            retry = true;
+        } else {
+            let _ = state.stdin.flush();
         }
-        self.stdin.flush()?;
+
+        if retry {
+            // If pipe is broken, kill the state and retry once
+            self.state.take();
+            let new_state = self.ensure_alive()?;
+            new_state.stdin.write_all(line.as_bytes())?;
+            new_state.stdin.flush()?;
+        }
 
         let mut results = Vec::new();
         
         loop {
-            let buffer = match self.stdout_rx.recv_timeout(self.timeout) {
+            // Re-borrow state since we might have replaced it above
+            let state = self.state.as_mut().unwrap();
+            
+            let buffer = match state.stdout_rx.recv_timeout(self.timeout) {
                 Ok(l) => l,
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    let _ = self.child.kill();
-                    let _ = self.child.wait();
+                    // Timeout occurred: kill the process and return error
+                    // The next call will restart it via ensure_alive
+                    if let Some(mut state) = self.state.take() {
+                        let _ = state.child.kill();
+                        let _ = state.child.wait();
+                    }
                     return Err(anyhow!("Evaluation timed out after {:?}", self.timeout));
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    self.state.take();
                     return Err(anyhow!("REPL process exited unexpectedly"));
                 }
             };
@@ -173,8 +202,10 @@ impl Evaluator {
 
 impl Drop for Evaluator {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(mut state) = self.state.take() {
+            let _ = state.child.kill();
+            let _ = state.child.wait();
+        }
     }
 }
 
