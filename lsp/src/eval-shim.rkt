@@ -46,7 +46,7 @@
 (define (evaluate-single-form stx ns target-path)
   (with-handlers ([exn:fail? (lambda (e) 
                                (define-values (l c end-c) (get-exn-location e stx target-path))
-                               (display-result l c end-c e #t ""))])
+                               (display-result l (or (syntax-column stx) 0) l end-c e #t ""))])
     (define capture-port (open-output-string))
     (define result
       (parameterize ([current-output-port capture-port]
@@ -55,13 +55,14 @@
     (define captured (get-output-string capture-port))
     
     (define-values (end-line end-col) (get-syntax-end stx target-path))
+    (define start-line (or (syntax-line stx) 1))
     (define start-col (or (syntax-column stx) 0))
 
     (cond
       [(not (void? result))
-       (display-result end-line start-col end-col result #f captured)]
+       (display-result start-line start-col end-line end-col result #f captured)]
       [(not (string=? captured ""))
-       (display-result end-line start-col end-col 'void #f captured)])))
+       (display-result start-line start-col end-line end-col 'void #f captured)])))
 
 ;; Persistent REPL logic
 (define (run-repl)
@@ -97,7 +98,7 @@
     (unless (eof-object? stx)
       (with-handlers ([exn:fail? (lambda (e)
                                    (define-values (l c end-c) (get-exn-location e stx 'repl))
-                                   (display-result l c end-c e #t "")
+                                   (display-result l (or (syntax-column stx) 0) l end-c e #t "")
                                    (loop))])
         (define expanded (expand stx))
         (syntax-case expanded (module)
@@ -143,12 +144,13 @@
           (define-values (l c p-end) (port-next-location p))
           (values l c))
         (values (or (syntax-line stx) 1) 
-                (+ (or (syntax-column stx) 0) (or span 0))))))
+                (+ (or (syntax-column stx) 0) (or (syntax-span stx) 0))))))
 
-(define (display-result line col end-col val is-error output)
+(define (display-result line col end-line end-col val is-error output)
   (define base
     (hasheq 'line (or line 1)
             'col (or col 0)
+            'end_line (or end-line line 1)
             'end_col (or end-col col 999)
             'result (if (exn? val) (exn-message val) (format "~v" val))
             'is_error is-error
