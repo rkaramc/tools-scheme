@@ -15,6 +15,44 @@ let originalServerPath: string | undefined;
 let currentShimPath: string | undefined;
 let lspWatcher: fs.FSWatcher | undefined;
 
+const TEMP_DIR_NAME = 'vscode-scheme-toolbox-lsp';
+
+/**
+ * Returns the path to the dedicated temporary directory for LSP binaries.
+ */
+function getTempDir(): string {
+    const tempDir = path.join(os.tmpdir(), TEMP_DIR_NAME);
+    if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+    }
+    return tempDir;
+}
+
+/**
+ * Attempts to clean up stale temporary LSP binaries from previous sessions.
+ */
+function cleanupStaleFiles() {
+    const tempDir = path.join(os.tmpdir(), TEMP_DIR_NAME);
+    if (!fs.existsSync(tempDir)) { return; }
+
+    try {
+        const files = fs.readdirSync(tempDir);
+        for (const file of files) {
+            if (file.startsWith('scheme-toolbox-lsp-') && file.endsWith('.exe')) {
+                const filePath = path.join(tempDir, file);
+                try {
+                    fs.unlinkSync(filePath);
+                    outputChannel.appendLine(`Cleaned up stale temporary binary: ${file}`);
+                } catch (err) {
+                    // File is likely in use by another VS Code instance, ignore
+                }
+            }
+        }
+    } catch (err) {
+        outputChannel.appendLine(`Failed to scan temporary directory for cleanup: ${err}`);
+    }
+}
+
 /**
  * Searches for a binary in the system PATH.
  */
@@ -32,6 +70,8 @@ function findInPath(binaryName: string): string | undefined {
 export function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel('Scheme Toolbox');
     outputChannel.appendLine('Activating Scheme Toolbox extension...');
+
+    cleanupStaleFiles();
 
     const config = vscode.workspace.getConfiguration('scheme');
     const customLspPath = config.get<string>('lspPath');
@@ -206,7 +246,7 @@ function startClient(context: vscode.ExtensionContext) {
     if (process.platform === 'win32') {
         try {
             const tempName = `scheme-toolbox-lsp-${Date.now()}.exe`;
-            const newTempPath = path.join(os.tmpdir(), tempName);
+            const newTempPath = path.join(getTempDir(), tempName);
             fs.copyFileSync(originalServerPath, newTempPath);
             
             // Cleanup old temp file if it exists
@@ -272,7 +312,7 @@ async function restartClient() {
     if (process.platform === 'win32') {
         try {
             const tempName = `scheme-toolbox-lsp-${Date.now()}.exe`;
-            newTempPath = path.join(os.tmpdir(), tempName);
+            const newTempPath = path.join(getTempDir(), tempName);
             fs.copyFileSync(originalServerPath, newTempPath);
             newServerPath = newTempPath;
             outputChannel.appendLine(`Copied new LSP binary to: ${newTempPath}`);
