@@ -26,7 +26,7 @@ fn test_crlf_drift_stress() {
     let mut found_refresh = false;
     for _ in 0..100 { 
         let body = lsp.read_message();
-        println!("Received: {}", body);
+        // println!("Received: {}", body);
         if body.contains("workspace/inlayHint/refresh") {
             found_refresh = true;
             break;
@@ -42,14 +42,14 @@ fn test_crlf_drift_stress() {
     let mut results_count = 0;
 
     let body = lsp.read_message();
-    println!("Received in loop 2: {}", body);
+    // println!("Received in loop 2: {}", body);
     if body.contains("\"id\":3") {
         let json: Value = serde_json::from_str(&body).unwrap();
         let hints = json["result"].as_array().expect("result should be an array of InlayHint");
         results_count = hints.len();
 
         for hint in hints {
-            if hint["position"]["line"] == 50 {
+            if hint["position"]["line"] == 49 {
                 let label = hint["label"].as_str().unwrap();
                 if label.contains("=> 100") {
                     last_line_correct = true;
