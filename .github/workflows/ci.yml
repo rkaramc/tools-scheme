@@ -41,10 +41,13 @@ jobs:
         run: cd editors/vscode && npm run compile && npm test
 
   release:
-    name: Release Artifacts
+    name: Release Artifacts - ${{ matrix.os }}
     needs: test
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
     
     steps:
       - uses: actions/checkout@v4
@@ -60,18 +63,36 @@ jobs:
       - name: Setup Just
         uses: Taiki-E/install-action@just
 
-      - name: Install vsce
-        run: npm install -g @vscode/vsce
+      - name: Build LSP Release
+        run: just build 2
 
-      - name: Build Extension VSIX
-        run: cd editors/vscode && npm ci && vsce package --out ../../tools-scheme.vsix
+      - name: Package Binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cp lsp/target/release/scheme-toolbox-lsp.exe dist/scheme-toolbox-lsp-windows.exe
+          elif [ "${{ matrix.os }}" = "macos-latest" ]; then
+            cp lsp/target/release/scheme-toolbox-lsp dist/scheme-toolbox-lsp-macos
+          else
+            cp lsp/target/release/scheme-toolbox-lsp dist/scheme-toolbox-lsp-linux
+          fi
 
-      - name: Upload VSIX
+      - name: Upload Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: scheme-toolbox-lsp-${{ matrix.os }}
+          path: dist/
+
+      - name: Build Extension VSIX (Ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          npm install -g @vscode/vsce
+          cd editors/vscode && npm ci && vsce package --out ../../tools-scheme.vsix
+
+      - name: Upload VSIX (Ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
           name: vscode-extension
           path: tools-scheme.vsix
-
-      # Note: We are not bundling binaries, so the CD pipeline for the LSP 
-      # would typically involve 'cargo publish'. 
-      # Binary artifacts for different OSs could be uploaded here if desired.
