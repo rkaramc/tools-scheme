@@ -479,8 +479,27 @@ mod tests {
         let has_error = results.iter().any(|r| r.is_error);
         let has_2 = results.iter().any(|r| r.result == "2");
 
+        assert!(has_1, "Should have evaluated 1. Results: {:?}", results);
+        assert!(has_error, "Should have reported syntax error. Results: {:?}", results);
+        assert!(has_2, "Should have recovered and evaluated 2. Results: {:?}", results);
+    }
+
+    #[test]
+    fn test_syntax_recovery_complex() {
+        let mut evaluator = Evaluator::new().unwrap();
+        evaluator.timeout = Duration::from_secs(5);
+
+        let code = "1\n(define \n(error\n2";
+        let results = evaluator.evaluate_str(code, Some("file:///test.rkt"), None).unwrap();
+        
+        println!("RESULTS: {:#?}", results);
+        
+        let has_1 = results.iter().any(|r| r.result == "1");
+        let has_2 = results.iter().any(|r| r.result == "2");
+        let error_count = results.iter().filter(|r| r.is_error).count();
+
         assert!(has_1, "Should have evaluated 1");
-        assert!(has_error, "Should have reported syntax error ({:?})", results);
-        assert!(has_2, "Should have recovered and evaluated 2");
+        assert!(has_2, "Should have evaluated 2");
+        assert!(error_count >= 2, "Should have reported at least two errors (got {})", error_count);
     }
 }
