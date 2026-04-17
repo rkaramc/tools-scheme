@@ -81,6 +81,14 @@
                     ],
                     "default": null,
                     "description": "Custom path to the scheme-toolbox-lsp binary. If not set, the default bundled binary is used."
+                },
+                "scheme.racketPath": {
+                    "type": [
+                        "string",
+                        "null"
+                    ],
+                    "default": null,
+                    "description": "Custom path to the Racket executable (e.g., /usr/local/bin/racket or C:\\Program Files\\Racket\\racket.exe). If not set, 'racket' is searched for in the system PATH."
                 }
             }
         }
