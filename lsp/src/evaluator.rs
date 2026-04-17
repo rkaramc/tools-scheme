@@ -21,6 +21,14 @@ pub struct EvalResult {
     pub output: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RangeResult {
+    pub line: u32,
+    pub col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+}
+
 struct ProcessState {
     child: Child,
     stdin: ChildStdin,
@@ -224,6 +232,70 @@ impl Evaluator {
         }
         Ok(())
     }
+
+    pub fn parse(&mut self, target_path: &PathBuf) -> Result<Vec<RangeResult>> {
+        let content = std::fs::read_to_string(target_path)?;
+        let uri = format!("file:///{}", target_path.to_string_lossy());
+        self.parse_str(&content, Some(&uri))
+    }
+
+    pub fn parse_str(&mut self, content: &str, uri: Option<&str>) -> Result<Vec<RangeResult>> {
+        let state = self.ensure_alive()?;
+
+        let req = serde_json::json!({
+            "type": "parse",
+            "content": content,
+            "uri": uri
+        });
+
+        let mut line = serde_json::to_string(&req)?;
+        line.push('\n');
+        
+        let mut retry = false;
+        if state.stdin.write_all(line.as_bytes()).is_err() {
+            retry = true;
+        } else {
+            let _ = state.stdin.flush();
+        }
+
+        if retry {
+            self.state.take();
+            let new_state = self.ensure_alive()?;
+            new_state.stdin.write_all(line.as_bytes())?;
+            new_state.stdin.flush()?;
+        }
+
+        let mut results = Vec::new();
+        
+        loop {
+            let state = self.state.as_mut().unwrap();
+            let buffer = match state.stdout_rx.recv_timeout(self.timeout) {
+                Ok(l) => l,
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    if let Some(mut state) = self.state.take() {
+                        let _ = state.child.kill();
+                        let _ = state.child.wait();
+                    }
+                    return Err(anyhow!("Parsing timed out after {:?}", self.timeout));
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    self.state.take();
+                    return Err(anyhow!("REPL process exited unexpectedly"));
+                }
+            };
+
+            let trimmed = buffer.trim();
+            if trimmed == "READY" {
+                break;
+            }
+            
+            if let Ok(res) = serde_json::from_str::<RangeResult>(trimmed) {
+                results.push(res);
+            }
+        }
+
+        Ok(results)
+    }
 }
 
 impl Drop for Evaluator {
@@ -324,6 +396,41 @@ mod tests {
         let result = evaluator.evaluate_str("42", None, None).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].result, "42");
+    }
+
+    #[test]
+    fn test_delegated_parsing() {
+        let mut shim_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        shim_path.push("src");
+        shim_path.push("eval-shim.rkt");
+        if !shim_path.exists() { return; }
+
+        let mut evaluator = Evaluator::new(shim_path).unwrap();
+        evaluator.timeout = Duration::from_secs(5);
+
+        let text = r#"
+(define x 1)
+#;
+(define y 2)
+#|
+  Block comment
+|#
+(define z 3)
+"#;
+        let ranges = evaluator.parse_str(text, None).unwrap();
+        
+        // Should find (define x 1) and (define z 3), but skip (define y 2) and block comment
+        assert_eq!(ranges.len(), 2);
+        
+        assert_eq!(ranges[0].line, 2);
+        assert_eq!(ranges[0].col, 0);
+        assert_eq!(ranges[0].end_line, 2);
+        assert_eq!(ranges[0].end_col, 12);
+        
+        assert_eq!(ranges[1].line, 8);
+        assert_eq!(ranges[1].col, 0);
+        assert_eq!(ranges[1].end_line, 8);
+        assert_eq!(ranges[1].end_col, 12);
     }
 
     #[test]

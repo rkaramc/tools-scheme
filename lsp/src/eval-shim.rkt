@@ -85,6 +85,8 @@
             (cond
               [(string=? type "evaluate")
                (evaluate-string-content (hash-ref json-input 'content) uri)]
+              [(string=? type "parse")
+               (parse-string-content (hash-ref json-input 'content) uri)]
               [(string=? type "clear-namespace")
                (when uri
                  (hash-remove! document-namespaces uri))]
@@ -94,7 +96,29 @@
           (flush-output real-stdout)
           (loop))))))
 
+(define (parse-string-content content uri)
+  (define source (or uri 'parser))
+  (hash-set! file-content-cache source content)
+  (define port (open-input-string content))
+  (port-count-lines! port)
+  (let loop ()
+    (define stx (read-syntax source port))
+    (unless (eof-object? stx)
+      (define-values (end-line end-col) (get-syntax-end stx source))
+      (define start-line (or (syntax-line stx) 1))
+      (define start-col (or (syntax-column stx) 0))
+      (define range
+        (hasheq 'type "range"
+                'line start-line
+                'col start-col
+                'end_line end-line
+                'end_col end-col))
+      (displayln (jsexpr->string range) real-stdout)
+      (loop))))
+
 (define (evaluate-string-content content uri)
+  (define source (or uri 'repl))
+  (hash-set! file-content-cache source content)
   (define port (open-input-string content))
   (port-count-lines! port)
   
@@ -105,10 +129,10 @@
 
   (parameterize ([current-namespace ns])
     (let loop ()
-      (define stx (read-syntax 'repl port))
+      (define stx (read-syntax source port))
       (unless (eof-object? stx)
         (with-handlers ([exn:fail? (lambda (e)
-                                     (define-values (l c end-c) (get-exn-location e stx 'repl))
+                                     (define-values (l c end-c) (get-exn-location e stx source))
                                      (display-result l (or (syntax-column stx) 0) l end-c e #t "")
                                      (loop))])
           (define expanded (expand stx))
@@ -119,9 +143,9 @@
                (dynamic-require `(quote ,m-name) #f)
                (define ns (module->namespace `(quote ,m-name)))
                (for ([form (syntax->list #'body)])
-                 (evaluate-single-form form ns 'repl)))]
+                 (evaluate-single-form form ns source)))]
             [_
-             (evaluate-single-form stx (current-namespace) 'repl)])
+             (evaluate-single-form stx (current-namespace) source)])
           (loop))))))
 
 
