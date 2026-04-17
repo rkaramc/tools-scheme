@@ -16,7 +16,7 @@
 
   (define port (open-input-file target-path))
   (port-count-lines! port)
-  
+
   (parameterize ([read-accept-reader #t]
                  [read-accept-lang #t]
                  [current-namespace (make-base-namespace)])
@@ -30,11 +30,11 @@
                                    (loop))])
         (define stx (read-syntax target-path port))
         (unless (eof-object? stx)
-          (with-handlers ([exn:fail? (lambda (e) 
+          (with-handlers ([exn:fail? (lambda (e)
                                        (define-values (l c end-c) (get-exn-location e stx target-path))
                                        (display-result (make-range l c l end-c) e #:is-error #t)
                                        (loop))])
-            
+
             (define expanded (expand stx))
             (syntax-case expanded (module)
               [(module name lang (mb . body))
@@ -44,14 +44,14 @@
                  (define ns (module->namespace `(quote ,m-name)))
                  (for ([form (syntax->list #'body)])
                    (evaluate-single-form form ns target-path)))]
-              [_ 
+              [_
                (evaluate-single-form stx (current-namespace) target-path)])
             (loop))))))
-  
+
   (when (string=? path "-") (delete-file target-path)))
 
 (define (evaluate-single-form stx ns target-path)
-  (with-handlers ([exn:fail? (lambda (e) 
+  (with-handlers ([exn:fail? (lambda (e)
                                (define-values (l c end-c) (get-exn-location e stx target-path))
                                (display-result (make-range l (or (syntax-column stx) 0) l end-c) e #:is-error #t))])
     (define capture-port (open-output-string))
@@ -60,7 +60,7 @@
                      [current-namespace ns])
         (eval stx)))
     (define captured (get-output-string capture-port))
-    
+
     (define-values (end-line end-col) (get-syntax-end stx target-path))
     (define start-line (or (syntax-line stx) 1))
     (define start-col (or (syntax-column stx) 0))
@@ -88,7 +88,7 @@
           (let ([json-input (string->jsexpr input)])
             (define type (hash-ref json-input 'type))
             (define uri (hash-ref json-input 'uri #f))
-            
+
             (cond
               [(string=? type "evaluate")
                (evaluate-string-content (hash-ref json-input 'content) uri)]
@@ -105,8 +105,9 @@
 
 (define (parse-string-content content uri)
   (define source (or uri 'parser))
-  (hash-set! file-content-cache source content)
-  (define port (open-input-string content))
+  (define normalized-content (string-replace content "\r\n" "\n"))
+  (hash-set! file-content-cache source normalized-content)
+  (define port (open-input-string normalized-content))
   (port-count-lines! port)
   (let loop ()
     (define pos (file-position port))
@@ -123,14 +124,16 @@
         (define start-col (or (syntax-column stx) 0))
         (define range (hash-set (make-range start-line start-col end-line end-col) 'type "range"))
         (displayln (jsexpr->string range) real-stdout)
-        (loop)))))
+        (loop))))
+  )
 
 (define (evaluate-string-content content uri)
   (define source (or uri 'repl))
-  (hash-set! file-content-cache source content)
-  (define port (open-input-string content))
+  (define normalized-content (string-replace content "\r\n" "\n"))
+  (hash-set! file-content-cache source normalized-content)
+  (define port (open-input-string normalized-content))
   (port-count-lines! port)
-  
+
   (define ns
     (if uri
         (hash-ref! document-namespaces uri (lambda () (make-base-namespace)))
@@ -167,14 +170,15 @@
 
 
 (define file-content-cache (make-hash))
-(define (get-file-content path)
+(define (get-normalized-content path)
   (if (symbol? path)
       "" ;; No content for REPL symbols
       (hash-ref! file-content-cache path
-                 (lambda () (file->string path)))))
+                 (lambda ()
+                   (string-replace (file->string path) "\r\n" "\n")))))
 
 (define (get-exn-location e stx target-path)
-  (let ([loc (and (exn:srclocs? e) 
+  (let ([loc (and (exn:srclocs? e)
                   (pair? ((exn:srclocs-accessor e) e))
                   (car ((exn:srclocs-accessor e) e)))])
     (if (and loc (srcloc-line loc) (srcloc-column loc))
@@ -188,7 +192,7 @@
         [line (and stx (syntax-line stx))]
         [col (and stx (syntax-column stx))])
     (if (and stx (not (symbol? target-path)) pos span line col)
-        (let* ([content (get-file-content target-path)]
+        (let* ([content (get-normalized-content target-path)]
                ;; Substring can be out of bounds if file changed, so guard it
                [sub (if (<= (+ pos -1 span) (string-length content))
                         (substring content (- pos 1) (+ pos -1 span))
@@ -219,8 +223,8 @@
 (module+ main
   (require racket/cmdline)
   (command-line
-   #:program "eval-shim"
-   #:once-each
-   [("--repl") "Run in persistent REPL mode" (run-repl) (exit 0)]
-   #:args (filename)
-   (evaluate-file filename)))
+    #:program "eval-shim"
+    #:once-each
+    [("--repl") "Run in persistent REPL mode" (run-repl) (exit 0)]
+    #:args (filename)
+    (evaluate-file filename)))

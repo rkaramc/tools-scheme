@@ -12,6 +12,14 @@ readme = "../README.md"
 name = "scheme-toolbox-lsp"
 path = "src/main.rs"
 
+[[bin]]
+name = "coord-indexer"
+path = "src/bin/coord_indexer.rs"
+
+[[bin]]
+name = "coord-compare"
+path = "src/bin/coord_compare.rs"
+
 [dependencies]
 lsp-server = "0.7"
 lsp-types = "0.95"
