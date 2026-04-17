@@ -466,4 +466,21 @@ mod tests {
         let res_a3 = evaluator.evaluate_str("x", Some("file:///a.rkt"), None).unwrap();
         assert!(res_a3[0].is_error, "x should be undefined in document A after clear");
     }
+
+    #[test]
+    fn test_syntax_recovery() {
+        let mut evaluator = Evaluator::new().unwrap();
+        evaluator.timeout = Duration::from_secs(5);
+
+        let code = "1\n(unclosed-bracket\n2";
+        let results = evaluator.evaluate_str(code, Some("file:///test.rkt"), None).unwrap();
+        
+        let has_1 = results.iter().any(|r| r.result == "1");
+        let has_error = results.iter().any(|r| r.is_error);
+        let has_2 = results.iter().any(|r| r.result == "2");
+
+        assert!(has_1, "Should have evaluated 1");
+        assert!(has_error, "Should have reported syntax error ({:?})", results);
+        assert!(has_2, "Should have recovered and evaluated 2");
+    }
 }
