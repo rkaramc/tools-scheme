@@ -67,17 +67,15 @@ function findInPath(binaryName: string): string | undefined {
     return undefined;
 }
 
-export function activate(context: vscode.ExtensionContext) {
-    outputChannel = vscode.window.createOutputChannel('Scheme Toolbox');
-    outputChannel.appendLine('Activating Scheme Toolbox extension...');
-
+/**
+ * Resolves the path to the LSP binary, checking settings, environment, PATH, and development fallback.
+ */
+function resolveLspPath(context: vscode.ExtensionContext): string | undefined {
     const config = vscode.workspace.getConfiguration('scheme');
     const customLspPath = config.get<string>('lspPath');
-    const customShimPath = config.get<string>('shimPath');
     const envLspDir = process.env.TOOLS_SCHEME_LSP_PATH;
-
-    // 1. Determine the path to the LSP binary
     const binName = process.platform === 'win32' ? 'scheme-toolbox-lsp.exe' : 'scheme-toolbox-lsp';
+
     let serverPath = customLspPath;
 
     if (!serverPath && envLspDir) {
@@ -91,83 +89,24 @@ export function activate(context: vscode.ExtensionContext) {
         serverPath = findInPath(binName);
     }
 
-    if (!serverPath) {
-        const msg = 'Scheme Toolbox: Could not find "scheme-toolbox-lsp" binary. Please install it on your PATH or set "scheme.lspPath" in settings.';
-        outputChannel.appendLine(msg);
-        vscode.window.showErrorMessage(msg);
-        return;
-    }
-
-    originalServerPath = serverPath;
-
-    const isDevelopment =
-      context.extensionMode === vscode.ExtensionMode.Development;
-    if (isDevelopment) {
-      cleanupStaleFiles();
-
-      //   if (!serverPath) {
-      const devPath = context.asAbsolutePath(
-        path.join('..', '..', 'target', 'debug', binName),
-      );
-      if (fs.existsSync(devPath)) {
-        serverPath = devPath;
-        originalServerPath = devPath;
-        outputChannel.appendLine(
-          `Using development LSP fallback: ${serverPath}`,
-        );
-      }
-      //   }
-
-      // On all platforms, watch the executable and restart client on change (Development only)
-      let watchTimeout: NodeJS.Timeout | undefined;
-      try {
-        lspWatcher = fs.watch(originalServerPath, (event) => {
-          if (event === "change") {
-            if (watchTimeout) {
-              clearTimeout(watchTimeout);
-            }
-            watchTimeout = setTimeout(() => {
-              outputChannel.appendLine(
-                `Detected change in LSP binary: ${originalServerPath}. Restarting...`,
-              );
-              restartClient(context); // Pass context to restartClient
-            }, 500);
-          }
-        });
-      } catch (err) {
-        outputChannel.appendLine(
-          `Failed to start file watcher for LSP binary: ${err}`,
-        );
-      }
-
-      // On Windows, copy the executable to a temporary location to avoid locking the original (Development only)
-      try {
-        const tempName = `scheme-toolbox-lsp-${Date.now()}.exe`;
-        const newTempPath = path.join(getTempDir(), tempName);
-        fs.copyFileSync(originalServerPath, newTempPath);
-
-        // Cleanup old temp file if it exists
-        if (tempServerPath && fs.existsSync(tempServerPath)) {
-          try {
-            fs.unlinkSync(tempServerPath);
-          } catch (e) {}
+    if (!serverPath && context.extensionMode === vscode.ExtensionMode.Development) {
+        const devPath = context.asAbsolutePath(path.join('..', '..', 'target', 'debug', binName));
+        if (fs.existsSync(devPath)) {
+            serverPath = devPath;
         }
-
-        tempServerPath = newTempPath;
-        serverPath = tempServerPath;
-        outputChannel.appendLine(
-          `Copied LSP binary to temporary location: ${tempServerPath}`,
-        );
-      } catch (err) {
-        outputChannel.appendLine(
-          `Failed to copy LSP binary to temporary location: ${err}`,
-        );
-      }
     }
-    
 
+    return serverPath;
+}
 
-    // 2. Determine the path to the Racket shim
+/**
+ * Resolves the path to the Racket evaluation shim.
+ */
+function resolveShimPath(context: vscode.ExtensionContext, lspPath: string | undefined): string | undefined {
+    const config = vscode.workspace.getConfiguration('scheme');
+    const customShimPath = config.get<string>('shimPath');
+    const envLspDir = process.env.TOOLS_SCHEME_LSP_PATH;
+
     let shimPath = customShimPath;
     if (!shimPath && envLspDir) {
         const envPath = path.join(envLspDir, 'eval-shim.rkt');
@@ -184,21 +123,92 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     // Default to the same directory as the LSP if not found elsewhere (standard install layout)
-    if (!shimPath && originalServerPath) {
-        const binDir = path.dirname(originalServerPath);
+    if (!shimPath && lspPath) {
+        const binDir = path.dirname(lspPath);
         const localShim = path.join(binDir, 'eval-shim.rkt');
         if (fs.existsSync(localShim)) {
             shimPath = localShim;
         }
     }
 
-    if (!shimPath) {
-        const msg = 'Scheme Toolbox: Could not find "eval-shim.rkt". Please set "scheme.shimPath" in settings.';
-        outputChannel.appendLine(msg);
-        // We don't return here yet as ts-0dt might make this optional, but we warn.
+    return shimPath;
+}
+
+/**
+ * Prepares the binary for execution. On Windows in Development mode, this involves
+ * copying the binary to a temporary location to avoid locking.
+ */
+function getRuntimeBinaryPath(context: vscode.ExtensionContext, originalPath: string): string {
+    const isDevelopment = context.extensionMode === vscode.ExtensionMode.Development;
+    if (!isDevelopment || process.platform !== 'win32') {
+        return originalPath;
     }
 
-    currentShimPath = shimPath;
+    try {
+        const tempName = `scheme-toolbox-lsp-${Date.now()}.exe`;
+        const newTempPath = path.join(getTempDir(), tempName);
+        fs.copyFileSync(originalPath, newTempPath);
+
+        // Cleanup old temp file if it exists
+        if (tempServerPath && fs.existsSync(tempServerPath)) {
+            try {
+                fs.unlinkSync(tempServerPath);
+            } catch (e) { }
+        }
+
+        tempServerPath = newTempPath;
+        outputChannel.appendLine(`Copied LSP binary to temporary location: ${tempServerPath}`);
+        return tempServerPath;
+    } catch (err) {
+        outputChannel.appendLine(`Failed to copy LSP binary to temporary location: ${err}`);
+        return originalPath;
+    }
+}
+
+export function activate(context: vscode.ExtensionContext) {
+    outputChannel = vscode.window.createOutputChannel('Scheme Toolbox');
+    outputChannel.appendLine('Activating Scheme Toolbox extension...');
+
+    // 1. Resolve LSP binary path
+    const lspPath = resolveLspPath(context);
+    if (!lspPath) {
+        const msg = 'Scheme Toolbox: Could not find "scheme-toolbox-lsp" binary. Please install it on your PATH or set "scheme.lspPath" in settings.';
+        outputChannel.appendLine(msg);
+        vscode.window.showErrorMessage(msg);
+        return;
+    }
+    originalServerPath = lspPath;
+
+    // 2. Resolve Racket shim path
+    currentShimPath = resolveShimPath(context, originalServerPath);
+    if (!currentShimPath) {
+        outputChannel.appendLine('Scheme Toolbox: Could not find "eval-shim.rkt". Please set "scheme.shimPath" in settings.');
+    }
+
+    // 3. Prepare runtime binary (Windows lock workaround in development)
+    const isDevelopment = context.extensionMode === vscode.ExtensionMode.Development;
+    if (isDevelopment) {
+        cleanupStaleFiles();
+
+        // Watch the original LSP binary for changes (Development only)
+        let watchTimeout: NodeJS.Timeout | undefined;
+        try {
+            lspWatcher = fs.watch(originalServerPath, (event) => {
+                if (event === "change") {
+                    if (watchTimeout) {
+                        clearTimeout(watchTimeout);
+                    }
+                    watchTimeout = setTimeout(() => {
+                        outputChannel.appendLine(`Detected change in LSP binary: ${originalServerPath}. Restarting...`);
+                        restartClient(context);
+                    }, 500);
+                }
+            });
+        } catch (err) {
+            outputChannel.appendLine(`Failed to start file watcher for LSP binary: ${err}`);
+        }
+    }
+
     startClient(context);
 
     // Register the custom command that delegates to the LSP
@@ -278,7 +288,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 function startClient(context: vscode.ExtensionContext) {
     if (!originalServerPath) { return; }
-    let serverPath = tempServerPath || originalServerPath;
+    const serverPath = getRuntimeBinaryPath(context, originalServerPath);
 
     outputChannel.appendLine(`LSP Server Path: ${serverPath}`);
     outputChannel.appendLine(`Racket Shim Path: ${currentShimPath}`);
@@ -321,38 +331,14 @@ function startClient(context: vscode.ExtensionContext) {
 
 async function restartClient(context: vscode.ExtensionContext) {
     if (!originalServerPath) { return; }
-    outputChannel.appendLine('Restarting LSP client...');
-    
-    // 1. Prepare new binary (on Windows)
-    let newServerPath = originalServerPath;
-    let newTempPath: string | undefined;
-
-    const isDevelopment = context.extensionMode === vscode.ExtensionMode.Development;
-    if (isDevelopment && process.platform === 'win32') {
-        try {
-            const tempName = `scheme-toolbox-lsp-${Date.now()}.exe`;
-            const newTempPath = path.join(getTempDir(), tempName);
-            fs.copyFileSync(originalServerPath, newTempPath);
-            newServerPath = newTempPath;
-            outputChannel.appendLine(`Copied new LSP binary to: ${newTempPath}`);
-        } catch (err) {
-            outputChannel.appendLine(`Failed to copy new LSP binary, will try to reuse existing: ${err}`);
-        }
-    }
-
-    // 2. Stop old client
+    // 1. Stop old client
     const oldTempPath = tempServerPath;
     if (client) {
         outputChannel.appendLine('Stopping old LSP client...');
         await client.stop();
     }
 
-    // 3. Update paths and start new client
-    tempServerPath = newTempPath;
-    
-    // We need to re-initialize the client with new serverOptions
-    // Note: In some versions of vscode-languageclient, you can just update serverOptions.
-    // But re-creating the client is safer for path changes.
+    // 2. Start new client (getRuntimeBinaryPath handles Windows temp copying)
     startClient(context);
 
     // 4. Cleanup old temp file
