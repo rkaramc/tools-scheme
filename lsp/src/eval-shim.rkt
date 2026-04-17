@@ -21,25 +21,32 @@
                  [read-accept-lang #t]
                  [current-namespace (make-base-namespace)])
     (let loop ()
-      (define stx (read-syntax target-path port))
-      (unless (eof-object? stx)
-        (with-handlers ([exn:fail? (lambda (e) 
-                                     (define-values (l c end-c) (get-exn-location e stx target-path))
-                                     (display-result l c l end-c e #t "")
-                                     (loop))])
-          
-          (define expanded (expand stx))
-          (syntax-case expanded (module)
-            [(module name lang (mb . body))
-             (let ([m-name (syntax-e #'name)])
-               (eval expanded)
-               (dynamic-require `(quote ,m-name) #f)
-               (define ns (module->namespace `(quote ,m-name)))
-               (for ([form (syntax->list #'body)])
-                 (evaluate-single-form form ns target-path)))]
-            [_ 
-             (evaluate-single-form stx (current-namespace) target-path)])
-          (loop)))))
+      (define pos (file-position port))
+      (with-handlers ([exn:fail? (lambda (e)
+                                   (define-values (l c end-c) (get-exn-location e #f target-path))
+                                   (display-result l c l end-c e #t "")
+                                   (file-position port pos)
+                                   (read-line port)
+                                   (loop))])
+        (define stx (read-syntax target-path port))
+        (unless (eof-object? stx)
+          (with-handlers ([exn:fail? (lambda (e) 
+                                       (define-values (l c end-c) (get-exn-location e stx target-path))
+                                       (display-result l c l end-c e #t "")
+                                       (loop))])
+            
+            (define expanded (expand stx))
+            (syntax-case expanded (module)
+              [(module name lang (mb . body))
+               (let ([m-name (syntax-e #'name)])
+                 (eval expanded)
+                 (dynamic-require `(quote ,m-name) #f)
+                 (define ns (module->namespace `(quote ,m-name)))
+                 (for ([form (syntax->list #'body)])
+                   (evaluate-single-form form ns target-path)))]
+              [_ 
+               (evaluate-single-form stx (current-namespace) target-path)])
+            (loop))))))
   
   (when (string=? path "-") (delete-file target-path)))
 
@@ -102,19 +109,26 @@
   (define port (open-input-string content))
   (port-count-lines! port)
   (let loop ()
-    (define stx (read-syntax source port))
-    (unless (eof-object? stx)
-      (define-values (end-line end-col) (get-syntax-end stx source))
-      (define start-line (or (syntax-line stx) 1))
-      (define start-col (or (syntax-column stx) 0))
-      (define range
-        (hasheq 'type "range"
-                'line start-line
-                'col start-col
-                'end_line end-line
-                'end_col end-col))
-      (displayln (jsexpr->string range) real-stdout)
-      (loop))))
+    (define pos (file-position port))
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (define-values (l c end-c) (get-exn-location e #f source))
+                                 (display-result l c l end-c e #t "")
+                                 (file-position port pos)
+                                 (read-line port)
+                                 (loop))])
+      (define stx (read-syntax source port))
+      (unless (eof-object? stx)
+        (define-values (end-line end-col) (get-syntax-end stx source))
+        (define start-line (or (syntax-line stx) 1))
+        (define start-col (or (syntax-column stx) 0))
+        (define range
+          (hasheq 'type "range"
+                  'line start-line
+                  'col start-col
+                  'end_line end-line
+                  'end_col end-col))
+        (displayln (jsexpr->string range) real-stdout)
+        (loop)))))
 
 (define (evaluate-string-content content uri)
   (define source (or uri 'repl))
@@ -129,24 +143,31 @@
 
   (parameterize ([current-namespace ns])
     (let loop ()
-      (define stx (read-syntax source port))
-      (unless (eof-object? stx)
-        (with-handlers ([exn:fail? (lambda (e)
-                                     (define-values (l c end-c) (get-exn-location e stx source))
-                                     (display-result l (or (syntax-column stx) 0) l end-c e #t "")
-                                     (loop))])
-          (define expanded (expand stx))
-          (syntax-case expanded (module)
-            [(module name lang (mb . body))
-             (let ([m-name (syntax-e #'name)])
-               (eval expanded)
-               (dynamic-require `(quote ,m-name) #f)
-               (define ns (module->namespace `(quote ,m-name)))
-               (for ([form (syntax->list #'body)])
-                 (evaluate-single-form form ns source)))]
-            [_
-             (evaluate-single-form stx (current-namespace) source)])
-          (loop))))))
+      (define pos (file-position port))
+      (with-handlers ([exn:fail? (lambda (e)
+                                   (define-values (l c end-c) (get-exn-location e #f source))
+                                   (display-result l c l end-c e #t "")
+                                   (file-position port pos)
+                                   (read-line port)
+                                   (loop))])
+        (define stx (read-syntax source port))
+        (unless (eof-object? stx)
+          (with-handlers ([exn:fail? (lambda (e)
+                                       (define-values (l c end-c) (get-exn-location e stx source))
+                                       (display-result l (or (syntax-column stx) 0) l end-c e #t "")
+                                       (loop))])
+            (define expanded (expand stx))
+            (syntax-case expanded (module)
+              [(module name lang (mb . body))
+               (let ([m-name (syntax-e #'name)])
+                 (eval expanded)
+                 (dynamic-require `(quote ,m-name) #f)
+                 (define ns (module->namespace `(quote ,m-name)))
+                 (for ([form (syntax->list #'body)])
+                   (evaluate-single-form form ns source)))]
+              [_
+               (evaluate-single-form stx (current-namespace) source)])
+            (loop)))))))
 
 
 
@@ -167,11 +188,11 @@
           (values l (or (syntax-column stx) 0) c)))))
 
 (define (get-syntax-end stx target-path)
-  (let ([pos (syntax-position stx)]
-        [span (syntax-span stx)]
-        [line (syntax-line stx)]
-        [col (syntax-column stx)])
-    (if (and (not (symbol? target-path)) pos span line col)
+  (let ([pos (and stx (syntax-position stx))]
+        [span (and stx (syntax-span stx))]
+        [line (and stx (syntax-line stx))]
+        [col (and stx (syntax-column stx))])
+    (if (and stx (not (symbol? target-path)) pos span line col)
         (let* ([content (get-file-content target-path)]
                ;; Substring can be out of bounds if file changed, so guard it
                [sub (if (<= (+ pos -1 span) (string-length content))
