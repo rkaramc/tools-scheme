@@ -9,13 +9,10 @@ Welcome to the **Tools Scheme** repository. This document provides essential con
 - **`.agents/workflows/`**: Machine-readable and human-readable guides for specific tasks.
 - **`.beads/`**: Issue tracking using the [Beads](https://github.com/steveyegge/beads) system.
 
-## Tooling Standards
-
-- **Version Control**: Use `jj` (Jujutsu) by default. Avoid `git` unless explicitly necessary.
-- **Package Management**: Use `uv` for all Python-related tasks.
-- **Issue Tracking**: Use the `bd` CLI to interact with the Beads database (e.g., `bd list`, `bd show <id>`).
-
 ## High-Level Workflows
+
+> [!NOTE]
+> Tooling preferences (e.g., JJ vs Git) are managed via personal overrides in `.agents/local.md`. Agents should check for that file for user-specific workflow instructions.
 
 Agents should favor following standardized workflows located in `.agents/workflows/`. Specifically:
 
