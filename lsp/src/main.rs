@@ -13,7 +13,6 @@ use lsp_types::{
 use serde_json::json;
 use std::collections::HashMap;
 use std::error::Error;
-use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::sync::mpsc;
 
@@ -33,8 +32,8 @@ struct SharedState {
 }
 
 enum EvalAction {
-    Evaluate { content: String, request_id: RequestId, version: Option<i32> },
-    Parse { content: String, version: Option<i32> },
+    Evaluate { content: String, #[allow(dead_code)] request_id: RequestId, version: Option<i32> },
+    Parse { content: String, #[allow(dead_code)] version: Option<i32> },
     Clear,
 }
 
@@ -131,90 +130,89 @@ fn eval_worker(
 
                 let eval_results = evaluator.evaluate_str(&content, Some(&task.uri), log_handle.as_ref());
 
-
-        let uri_str = task.uri.clone();
-        let uri = match lsp_types::Url::parse(&uri_str) {
-            Ok(u) => u,
-            Err(_) => continue,
-        };
-
-        match eval_results {
-            Ok(results) => {
-                // Build diagnostics while we still have the results in hand,
-                // before acquiring the write lock.
-                let diagnostics: Vec<Diagnostic> = {
-                    let state_read = state.read().unwrap();
-                    let doc = state_read.document_store.get(&uri_str);
-                    results
-                        .iter()
-                        .filter(|r| r.is_error)
-                                .map(|res| {
-                                    let lsp_start_line = res.line.saturating_sub(1);
-                                    let lsp_end_line = if res.end_line > 0 { res.end_line.saturating_sub(1) } else { lsp_start_line };
-                                    
-                                    let (start_col, end_col) = match doc {
-                                        Some(d) => (
-                                            d.line_index.code_point_to_utf16(&d.text, lsp_start_line as usize, res.col as usize),
-                                            d.line_index.code_point_to_utf16(&d.text, lsp_end_line as usize, res.end_col as usize),
-                                        ),
-                                        None => (res.col, res.end_col),
-                                    };
-                                    Diagnostic {
-                                        range: Range::new(
-                                            Position::new(lsp_start_line, start_col),
-                                            Position::new(lsp_end_line, end_col),
-                                        ),
-                                        severity: Some(DiagnosticSeverity::ERROR),
-                                        message: res.result.clone(),
-                                        ..Default::default()
-                                    }
-                                })
-                        .collect()
+                let uri_str = task.uri.clone();
+                let uri = match lsp_types::Url::parse(&uri_str) {
+                    Ok(u) => u,
+                    Err(_) => continue,
                 };
 
-                // Store results.
-                state.write().unwrap().results.insert(uri_str.clone(), results);
+                match eval_results {
+                    Ok(results) => {
+                        // Build diagnostics while we still have the results in hand,
+                        // before acquiring the write lock.
+                        let diagnostics: Vec<Diagnostic> = {
+                            let state_read = state.read().unwrap();
+                            let doc = state_read.document_store.get(&uri_str);
+                            results
+                                .iter()
+                                .filter(|r| r.is_error)
+                                        .map(|res| {
+                                            let lsp_start_line = res.line.saturating_sub(1);
+                                            let lsp_end_line = if res.end_line > 0 { res.end_line.saturating_sub(1) } else { lsp_start_line };
+                                            
+                                            let (start_col, end_col) = match doc {
+                                                Some(d) => (
+                                                    d.line_index.code_point_to_utf16(&d.text, lsp_start_line as usize, res.col as usize),
+                                                    d.line_index.code_point_to_utf16(&d.text, lsp_end_line as usize, res.end_col as usize),
+                                                ),
+                                                None => (res.col, res.end_col),
+                                            };
+                                            Diagnostic {
+                                                range: Range::new(
+                                                    Position::new(lsp_start_line, start_col),
+                                                    Position::new(lsp_end_line, end_col),
+                                                ),
+                                                severity: Some(DiagnosticSeverity::ERROR),
+                                                message: res.result.clone(),
+                                                ..Default::default()
+                                            }
+                                        })
+                                .collect()
+                        };
 
-                // Publish diagnostics.
-                let diag_params = PublishDiagnosticsParams {
-                    uri: uri.clone(),
-                    diagnostics,
-                    version,
-                };
-                let not = lsp_server::Notification::new(
-                    PublishDiagnostics::METHOD.to_string(),
-                    diag_params,
-                );
-                let _ = sender.send(Message::Notification(not));
+                        // Store results.
+                        state.write().unwrap().results.insert(uri_str.clone(), results);
 
-                // Ask the client to refresh inlay hints.
-                let refresh_req = Request::new(
-                    RequestId::from(999),
-                    "workspace/inlayHint/refresh".to_string(),
-                    json!(null),
-                );
-                let _ = sender.send(Message::Request(refresh_req));
+                        // Publish diagnostics.
+                        let diag_params = PublishDiagnosticsParams {
+                            uri: uri.clone(),
+                            diagnostics,
+                            version,
+                        };
+                        let not = lsp_server::Notification::new(
+                            PublishDiagnostics::METHOD.to_string(),
+                            diag_params,
+                        );
+                        let _ = sender.send(Message::Notification(not));
+
+                        // Ask the client to refresh inlay hints.
+                        let refresh_req = Request::new(
+                            RequestId::from(999),
+                            "workspace/inlayHint/refresh".to_string(),
+                            json!(null),
+                        );
+                        let _ = sender.send(Message::Request(refresh_req));
+                    }
+                    Err(e) => {
+                        // Send an error notification via diagnostics so the user sees it.
+                        let diag_params = PublishDiagnosticsParams {
+                            uri,
+                            diagnostics: vec![Diagnostic {
+                                range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+                                severity: Some(DiagnosticSeverity::ERROR),
+                                message: format!("Evaluation error: {}", e),
+                                ..Default::default()
+                            }],
+                            version,
+                        };
+                        let not = lsp_server::Notification::new(
+                            PublishDiagnostics::METHOD.to_string(),
+                            diag_params,
+                        );
+                        let _ = sender.send(Message::Notification(not));
+                    }
+                }
             }
-            Err(e) => {
-                // Send an error notification via diagnostics so the user sees it.
-                let diag_params = PublishDiagnosticsParams {
-                    uri,
-                    diagnostics: vec![Diagnostic {
-                        range: Range::new(Position::new(0, 0), Position::new(0, 0)),
-                        severity: Some(DiagnosticSeverity::ERROR),
-                        message: format!("Evaluation error: {}", e),
-                        ..Default::default()
-                    }],
-                    version,
-                };
-                let not = lsp_server::Notification::new(
-                    PublishDiagnostics::METHOD.to_string(),
-                    diag_params,
-                );
-                let _ = sender.send(Message::Notification(not));
-            }
-        }
-    }
             EvalAction::Parse { content, .. } => {
                 let parse_results = evaluator.parse_str(&content, Some(&task.uri));
                 if let Ok(results) = parse_results {

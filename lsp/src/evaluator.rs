@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::process::{Command, Stdio, Child, ChildStdin};
 use std::io::{BufRead, BufReader, Write};
 use anyhow::{Result, anyhow};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::fs::File;
 use std::time::Duration;
 use crossbeam_channel::Receiver;
@@ -155,6 +155,7 @@ impl Evaluator {
         Ok(self.state.as_mut().unwrap())
     }
 
+    #[allow(unused)]
     pub fn evaluate(&mut self, target_path: &PathBuf) -> Result<Vec<EvalResult>> {
         let content = std::fs::read_to_string(target_path)?;
         let uri = format!("file:///{}", target_path.to_string_lossy());
@@ -242,6 +243,7 @@ impl Evaluator {
         Ok(results)
     }
 
+    #[allow(unused)]
     pub fn clear_namespace(&mut self, uri: &str) -> Result<()> {
         let state = self.ensure_alive()?;
         let req = serde_json::json!({
@@ -264,12 +266,14 @@ impl Evaluator {
         Ok(())
     }
 
+    #[allow(unused)]
     pub fn parse(&mut self, target_path: &PathBuf) -> Result<Vec<RangeResult>> {
         let content = std::fs::read_to_string(target_path)?;
         let uri = format!("file:///{}", target_path.to_string_lossy());
         self.parse_str(&content, Some(&uri))
     }
 
+    #[allow(unused)]
     pub fn parse_str(&mut self, content: &str, uri: Option<&str>) -> Result<Vec<RangeResult>> {
         let state = self.ensure_alive()?;
 
@@ -458,6 +462,7 @@ mod tests {
         
         // 1. Define x in doc A
         let res_a1 = evaluator.evaluate_str("(define x 42)", Some("file:///a.rkt"), None).unwrap();
+        assert!(res_a1.is_empty());
         
         // 2. Access x in doc A (should succeed)
         let res_a2 = evaluator.evaluate_str("x", Some("file:///a.rkt"), None).unwrap();
