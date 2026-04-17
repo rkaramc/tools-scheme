@@ -20,6 +20,7 @@ A collection of tools and utilities for managing Scheme, Racket, and other Lisp-
 
 ### Prerequisites
 
+- **Racket**: Version 8.0 or later (racket-langserver recommended).
 - **Rust**: Latest stable version.
 - **Node.js & npm**: Required for building editor extensions.
 - **just**: Command runner for standardized build tasks.
