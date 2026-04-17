@@ -2,10 +2,15 @@ use serde::{Deserialize, Serialize};
 use std::process::{Command, Stdio, Child, ChildStdin};
 use std::io::{BufRead, BufReader, Write};
 use anyhow::{Result, anyhow};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::fs::File;
 use std::time::Duration;
 use crossbeam_channel::Receiver;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+const SHIM_SOURCE: &str = include_str!("eval-shim.rkt");
+static SHIM_COUNTER: AtomicUsize = AtomicUsize::new(0);
+const TEMP_SUBDIR: &str = "vscode-scheme-toolbox-lsp";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvalResult {
@@ -37,13 +42,14 @@ struct ProcessState {
 
 pub struct Evaluator {
     state: Option<ProcessState>,
-    path: PathBuf,
+    shim_path: PathBuf,
+    _shim_lock: Option<std::fs::File>,
     timeout: Duration,
     global_session: std::fs::File,
 }
 
 impl Evaluator {
-    pub fn new(shim_path: PathBuf) -> Result<Self> {
+    pub fn new() -> Result<Self> {
         let global_session = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -55,11 +61,30 @@ impl Evaluator {
             .unwrap_or(15);
         let timeout = Duration::from_secs(timeout_secs);
 
+        // Prepare the embedded shim in a temporary location (consolidated folder)
+        let counter = SHIM_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let temp_dir = std::env::temp_dir().join(TEMP_SUBDIR);
+        std::fs::create_dir_all(&temp_dir)?;
+        let shim_path = temp_dir.join(format!("eval-shim-{}-{}.rkt", std::process::id(), counter));
+        
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.share_mode(1 | 2); // FILE_SHARE_READ | FILE_SHARE_WRITE (No DELETE)
+        }
+        
+        let mut shim_lock = options.open(&shim_path)?;
+        shim_lock.write_all(SHIM_SOURCE.as_bytes())?;
+        shim_lock.flush()?;
+
         let state = Self::spawn_process(&shim_path, &global_session)?;
 
         Ok(Self {
             state: Some(state),
-            path: shim_path,
+            shim_path,
+            _shim_lock: Some(shim_lock),
             timeout,
             global_session,
         })
@@ -118,7 +143,7 @@ impl Evaluator {
                 let _ = old_state.child.kill();
                 let _ = old_state.child.wait();
             }
-            self.state = Some(Self::spawn_process(&self.path, &self.global_session)?);
+            self.state = Some(Self::spawn_process(&self.shim_path, &self.global_session)?);
         }
         
         Ok(self.state.as_mut().unwrap())
@@ -304,6 +329,9 @@ impl Drop for Evaluator {
             let _ = state.child.kill();
             let _ = state.child.wait();
         }
+        // Release the lock before attempting to delete the file
+        drop(self._shim_lock.take());
+        let _ = std::fs::remove_file(&self.shim_path);
     }
 }
 
@@ -372,17 +400,7 @@ mod tests {
 
     #[test]
     fn test_evaluation_timeout() {
-        // Find the actual shim path for a real test
-        let mut shim_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        shim_path.push("src");
-        shim_path.push("eval-shim.rkt");
-        
-        if !shim_path.exists() {
-            // Skip if we can't find the shim (e.g. in some CI environments)
-            return;
-        }
-
-        let mut evaluator = Evaluator::new(shim_path).unwrap();
+        let mut evaluator = Evaluator::new().unwrap();
         // Set a very short timeout for the test
         evaluator.timeout = Duration::from_millis(500);
 
@@ -400,12 +418,7 @@ mod tests {
 
     #[test]
     fn test_delegated_parsing() {
-        let mut shim_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        shim_path.push("src");
-        shim_path.push("eval-shim.rkt");
-        if !shim_path.exists() { return; }
-
-        let mut evaluator = Evaluator::new(shim_path).unwrap();
+        let mut evaluator = Evaluator::new().unwrap();
         evaluator.timeout = Duration::from_secs(5);
 
         let text = r#"
@@ -435,12 +448,7 @@ mod tests {
 
     #[test]
     fn test_per_document_isolation() {
-        let mut shim_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        shim_path.push("src");
-        shim_path.push("eval-shim.rkt");
-        if !shim_path.exists() { return; }
-
-        let mut evaluator = Evaluator::new(shim_path).unwrap();
+        let mut evaluator = Evaluator::new().unwrap();
         
         // 1. Define x in doc A
         let res_a1 = evaluator.evaluate_str("(define x 42)", Some("file:///a.rkt"), None).unwrap();
