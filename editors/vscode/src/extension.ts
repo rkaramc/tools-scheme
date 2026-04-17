@@ -12,7 +12,6 @@ let client: LanguageClient;
 let outputChannel: vscode.OutputChannel;
 let tempServerPath: string | undefined;
 let originalServerPath: string | undefined;
-let currentShimPath: string | undefined;
 let lspWatcher: fs.FSWatcher | undefined;
 
 const TEMP_DIR_NAME = 'vscode-scheme-toolbox-lsp';
@@ -38,13 +37,14 @@ function cleanupStaleFiles() {
     try {
         const files = fs.readdirSync(tempDir);
         for (const file of files) {
-            if (file.startsWith('scheme-toolbox-lsp-') && file.endsWith('.exe')) {
+            if ((file.startsWith('scheme-toolbox-lsp-') && file.endsWith('.exe')) ||
+                (file.startsWith('eval-shim-') && file.endsWith('.rkt'))) {
                 const filePath = path.join(tempDir, file);
                 try {
                     fs.unlinkSync(filePath);
-                    outputChannel.appendLine(`Cleaned up stale temporary binary: ${file}`);
+                    outputChannel.appendLine(`Cleaned up stale temporary file: ${file}`);
                 } catch (err) {
-                    // File is likely in use by another VS Code instance, ignore
+                    // File is likely in use by another instance, ignore
                 }
             }
         }
@@ -99,40 +99,6 @@ function resolveLspPath(context: vscode.ExtensionContext): string | undefined {
     return serverPath;
 }
 
-/**
- * Resolves the path to the Racket evaluation shim.
- */
-function resolveShimPath(context: vscode.ExtensionContext, lspPath: string | undefined): string | undefined {
-    const config = vscode.workspace.getConfiguration('scheme');
-    const customShimPath = config.get<string>('shimPath');
-    const envLspDir = process.env.TOOLS_SCHEME_LSP_PATH;
-
-    let shimPath = customShimPath;
-    if (!shimPath && envLspDir) {
-        const envPath = path.join(envLspDir, 'eval-shim.rkt');
-        if (fs.existsSync(envPath)) {
-            shimPath = envPath;
-        }
-    }
-
-    if (!shimPath && context.extensionMode === vscode.ExtensionMode.Development) {
-        const devPath = context.asAbsolutePath(path.join('..', '..', 'lsp', 'src', 'eval-shim.rkt'));
-        if (fs.existsSync(devPath)) {
-            shimPath = devPath;
-        }
-    }
-
-    // Default to the same directory as the LSP if not found elsewhere (standard install layout)
-    if (!shimPath && lspPath) {
-        const binDir = path.dirname(lspPath);
-        const localShim = path.join(binDir, 'eval-shim.rkt');
-        if (fs.existsSync(localShim)) {
-            shimPath = localShim;
-        }
-    }
-
-    return shimPath;
-}
 
 /**
  * Prepares the binary for execution. On Windows in Development mode, this involves
@@ -179,13 +145,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
     originalServerPath = lspPath;
 
-    // 2. Resolve Racket shim path
-    currentShimPath = resolveShimPath(context, originalServerPath);
-    if (!currentShimPath) {
-        outputChannel.appendLine('Scheme Toolbox: Could not find "eval-shim.rkt". Please set "scheme.shimPath" in settings.');
-    }
-
-    // 3. Prepare runtime binary (Windows lock workaround in development)
+    // 2. Prepare runtime binary (Windows lock workaround in development)
     const isDevelopment = context.extensionMode === vscode.ExtensionMode.Development;
     if (isDevelopment) {
         cleanupStaleFiles();
@@ -291,11 +251,10 @@ function startClient(context: vscode.ExtensionContext) {
     const serverPath = getRuntimeBinaryPath(context, originalServerPath);
 
     outputChannel.appendLine(`LSP Server Path: ${serverPath}`);
-    outputChannel.appendLine(`Racket Shim Path: ${currentShimPath}`);
 
     const serverOptions: ServerOptions = {
         command: serverPath,
-        args: currentShimPath ? [currentShimPath] : [],
+        args: [],
     };
 
     const clientOptions: LanguageClientOptions = {

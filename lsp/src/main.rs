@@ -53,33 +53,6 @@ struct Server {
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let (connection, io_threads) = Connection::stdio();
 
-    // Parse arguments to find the shim path
-    let args: Vec<String> = std::env::args().collect();
-    let shim_path = if let Some(path_arg) = args.get(1) {
-        PathBuf::from(path_arg)
-    } else {
-        // Fallback 1: check environment variable
-        let env_fallback = std::env::var("TOOLS_SCHEME_LSP_PATH")
-            .map(|s| PathBuf::from(s).join("eval-shim.rkt"))
-            .ok()
-            .filter(|p| p.exists());
-
-        if let Some(p) = env_fallback {
-            p
-        } else {
-            // Fallback 2: look for eval-shim.rkt in the same directory as the executable
-            let mut path = std::env::current_exe()?;
-            path.pop();
-            path.push("eval-shim.rkt");
-            if !path.exists() {
-                // Third fallback: dev path
-                std::env::current_dir()?.join("lsp/src/eval-shim.rkt")
-            } else {
-                path
-            }
-        }
-    };
-
     let server_capabilities = serde_json::to_value(ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         code_action_provider: Some(lsp_types::CodeActionProviderCapability::Options(CodeActionOptions {
@@ -103,7 +76,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
     let _initialization_params = connection.initialize(server_capabilities)?;
 
-    let evaluator = Evaluator::new(shim_path)
+    let evaluator = Evaluator::new()
         .map_err(|e| format!("Failed to initialize evaluator: {}", e))?;
 
     let state = Arc::new(RwLock::new(SharedState {

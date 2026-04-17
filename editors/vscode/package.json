@@ -81,14 +81,6 @@
                     ],
                     "default": null,
                     "description": "Custom path to the scheme-toolbox-lsp binary. If not set, the default bundled binary is used."
-                },
-                "scheme.shimPath": {
-                    "type": [
-                        "string",
-                        "null"
-                    ],
-                    "default": null,
-                    "description": "Custom path to the eval-shim.rkt file. If not set, the default bundled shim is used."
                 }
             }
         }
