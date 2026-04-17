@@ -21,20 +21,20 @@ mod coordinates;
 mod documents;
 mod evaluator;
 mod inlay_hints;
-mod parser;
 
 use documents::DocumentStore;
 use evaluator::{EvalResult, Evaluator};
-use parser::Parser;
 
 /// State shared between the main loop and the eval worker thread.
 struct SharedState {
     results: HashMap<String, Vec<EvalResult>>,
+    ranges: HashMap<String, Vec<Range>>,
     document_store: DocumentStore,
 }
 
 enum EvalAction {
     Evaluate { content: String, request_id: RequestId },
+    Parse { content: String },
     Clear,
 }
 
@@ -48,7 +48,6 @@ struct EvalTask {
 struct Server {
     eval_tx: mpsc::SyncSender<EvalTask>,
     state: Arc<RwLock<SharedState>>,
-    parser: Parser,
 }
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
@@ -109,6 +108,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
     let state = Arc::new(RwLock::new(SharedState {
         results: HashMap::new(),
+        ranges: HashMap::new(),
         document_store: DocumentStore::new(),
     }));
 
@@ -128,7 +128,6 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut server = Server {
         eval_tx,
         state,
-        parser: Parser::new(),
     };
 
     server.main_loop(&connection)?;
@@ -240,8 +239,47 @@ fn eval_worker(
             }
         }
     }
+            EvalAction::Parse { content } => {
+                let parse_results = evaluator.parse_str(&content, Some(&task.uri));
+                if let Ok(results) = parse_results {
+                    let mut lock = state.write().unwrap();
+                    let uri_str = task.uri.clone();
+                    
+                    let lsp_ranges: Vec<Range> = if let Some(doc) = lock.document_store.get(&uri_str) {
+                         results.iter().map(|r| {
+                            let start_line = r.line.saturating_sub(1);
+                            let end_line = r.end_line.saturating_sub(1);
+                            let start_col = doc.line_index.code_point_to_utf16(&doc.text, start_line as usize, r.col as usize);
+                            let end_col = doc.line_index.code_point_to_utf16(&doc.text, end_line as usize, r.end_col as usize);
+                            Range::new(
+                                Position::new(start_line, start_col),
+                                Position::new(end_line, end_col),
+                            )
+                        }).collect()
+                    } else {
+                        results.iter().map(|r| {
+                            Range::new(
+                                Position::new(r.line.saturating_sub(1), r.col),
+                                Position::new(r.end_line.saturating_sub(1), r.end_col),
+                            )
+                        }).collect()
+                    };
+                    
+                    lock.ranges.insert(uri_str, lsp_ranges);
+                    
+                    // Ask the client to refresh code lenses
+                    let refresh_req = Request::new(
+                        RequestId::from(998),
+                        "workspace/codeLens/refresh".to_string(),
+                        json!(null),
+                    );
+                    let _ = sender.send(Message::Request(refresh_req));
+                }
+            }
             EvalAction::Clear => {
                 let _ = evaluator.clear_namespace(&task.uri);
+                let mut lock = state.write().unwrap();
+                lock.ranges.remove(&task.uri);
             }
         }
     }
@@ -281,13 +319,28 @@ impl Server {
 
     fn handle_notification(&mut self, not: lsp_server::Notification) -> Result<(), Box<dyn Error + Sync + Send>> {
         if let Some(params) = cast_notification::<DidOpenTextDocument>(&not) {
+            let uri = params.text_document.uri.to_string();
+            let content = params.text_document.text.clone();
             self.state.write().unwrap().document_store.open(params.text_document);
+            let _ = self.eval_tx.send(EvalTask {
+                uri,
+                action: EvalAction::Parse { content },
+            });
         } else if let Some(params) = cast_notification::<DidChangeTextDocument>(&not) {
-            self.state.write().unwrap().document_store.change(
-                params.text_document.uri.as_ref(),
+            let uri = params.text_document.uri.to_string();
+            let mut state = self.state.write().unwrap();
+            state.document_store.change(
+                &uri,
                 params.text_document.version,
                 params.content_changes,
             );
+            if let Some(doc) = state.document_store.get(&uri) {
+                let content = doc.text.clone();
+                let _ = self.eval_tx.send(EvalTask {
+                    uri,
+                    action: EvalAction::Parse { content },
+                });
+            }
         } else if let Some(params) = cast_notification::<DidCloseTextDocument>(&not) {
             let uri = params.text_document.uri.to_string();
             let mut state = self.state.write().unwrap();
@@ -393,30 +446,31 @@ impl Server {
         let mut lenses = Vec::new();
 
         if let Some(doc) = state.document_store.get(&uri_str) {
-            let ranges = self.parser.find_top_level_expressions(&doc.text);
-            for range in ranges {
-                let start_idx = doc.line_index.lsp_position_to_byte(&doc.text, range.start);
-                let end_idx = doc.line_index.lsp_position_to_byte(&doc.text, range.end);
-                // Clamp to text length
-                let end_idx = end_idx.min(doc.text.len());
-
-                let selected_text = if start_idx < end_idx {
-                    &doc.text[start_idx..end_idx]
-                } else {
-                    ""
-                };
-
-                let cmd = Command {
-                    title: "▶ Evaluate".to_string(),
-                    command: "scheme.evaluateSelection".to_string(),
-                    arguments: Some(vec![json!(uri_str), json!(selected_text)]),
-                };
-
-                lenses.push(CodeLens {
-                    range,
-                    command: Some(cmd),
-                    data: None,
-                });
+            if let Some(ranges) = state.ranges.get(&uri_str) {
+                for range in ranges {
+                    let start_idx = doc.line_index.lsp_position_to_byte(&doc.text, range.start);
+                    let end_idx = doc.line_index.lsp_position_to_byte(&doc.text, range.end);
+                    // Clamp to text length
+                    let end_idx = end_idx.min(doc.text.len());
+    
+                    let selected_text = if start_idx < end_idx {
+                        &doc.text[start_idx..end_idx]
+                    } else {
+                        ""
+                    };
+    
+                    let cmd = Command {
+                        title: "▶ Evaluate".to_string(),
+                        command: "scheme.evaluateSelection".to_string(),
+                        arguments: Some(vec![json!(uri_str), json!(selected_text)]),
+                    };
+    
+                    lenses.push(CodeLens {
+                        range: *range,
+                        command: Some(cmd),
+                        data: None,
+                    });
+                }
             }
         }
 
