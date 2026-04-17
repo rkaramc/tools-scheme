@@ -24,7 +24,7 @@
       (define pos (file-position port))
       (with-handlers ([exn:fail? (lambda (e)
                                    (define-values (l c end-c) (get-exn-location e #f target-path))
-                                   (display-result l c l end-c e #t "")
+                                   (display-result (make-range l c l end-c) e #:is-error #t)
                                    (file-position port pos)
                                    (read-line port)
                                    (loop))])
@@ -32,7 +32,7 @@
         (unless (eof-object? stx)
           (with-handlers ([exn:fail? (lambda (e) 
                                        (define-values (l c end-c) (get-exn-location e stx target-path))
-                                       (display-result l c l end-c e #t "")
+                                       (display-result (make-range l c l end-c) e #:is-error #t)
                                        (loop))])
             
             (define expanded (expand stx))
@@ -53,7 +53,7 @@
 (define (evaluate-single-form stx ns target-path)
   (with-handlers ([exn:fail? (lambda (e) 
                                (define-values (l c end-c) (get-exn-location e stx target-path))
-                               (display-result l (or (syntax-column stx) 0) l end-c e #t ""))])
+                               (display-result (make-range l (or (syntax-column stx) 0) l end-c) e #:is-error #t))])
     (define capture-port (open-output-string))
     (define result
       (parameterize ([current-output-port capture-port]
@@ -67,9 +67,9 @@
 
     (cond
       [(not (void? result))
-       (display-result start-line start-col end-line end-col result #f captured)]
+       (display-result (make-range start-line start-col end-line end-col) result #:output captured)]
       [(not (string=? captured ""))
-       (display-result start-line start-col end-line end-col 'void #f captured)])))
+       (display-result (make-range start-line start-col end-line end-col) 'void #:output captured)])))
 
 ;; Persistent REPL logic
 (define document-namespaces (make-hash))
@@ -81,7 +81,7 @@
       (define input (read-line))
       (unless (eof-object? input)
         (with-handlers ([exn:fail? (lambda (e)
-                                     (display-result 1 0 1 0 e #t "")
+                                     (display-result (make-range 1 0 1 0) e #:is-error #t)
                                      (displayln "READY" real-stdout)
                                      (flush-output real-stdout)
                                      (loop))])
@@ -112,7 +112,7 @@
     (define pos (file-position port))
     (with-handlers ([exn:fail? (lambda (e)
                                  (define-values (l c end-c) (get-exn-location e #f source))
-                                 (display-result l c l end-c e #t "")
+                                 (display-result (make-range l c l end-c) e #:is-error #t)
                                  (file-position port pos)
                                  (read-line port)
                                  (loop))])
@@ -121,12 +121,7 @@
         (define-values (end-line end-col) (get-syntax-end stx source))
         (define start-line (or (syntax-line stx) 1))
         (define start-col (or (syntax-column stx) 0))
-        (define range
-          (hasheq 'type "range"
-                  'line start-line
-                  'col start-col
-                  'end_line end-line
-                  'end_col end-col))
+        (define range (hash-set (make-range start-line start-col end-line end-col) 'type "range"))
         (displayln (jsexpr->string range) real-stdout)
         (loop)))))
 
@@ -146,7 +141,7 @@
       (define pos (file-position port))
       (with-handlers ([exn:fail? (lambda (e)
                                    (define-values (l c end-c) (get-exn-location e #f source))
-                                   (display-result l c l end-c e #t "")
+                                   (display-result (make-range l c l end-c) e #:is-error #t)
                                    (file-position port pos)
                                    (read-line port)
                                    (loop))])
@@ -154,7 +149,7 @@
         (unless (eof-object? stx)
           (with-handlers ([exn:fail? (lambda (e)
                                        (define-values (l c end-c) (get-exn-location e stx source))
-                                       (display-result l (or (syntax-column stx) 0) l end-c e #t "")
+                                       (display-result (make-range l (or (syntax-column stx) 0) l end-c) e #:is-error #t)
                                        (loop))])
             (define expanded (expand stx))
             (syntax-case expanded (module)
@@ -206,15 +201,18 @@
                         (string-length last-line)))))
         (values (or line 1) (+ (or col 0) (or span 0))))))
 
-(define (display-result line col end-line end-col val is-error output)
+(define (make-range line col end-line end-col)
+  (hasheq 'line (or line 1)
+          'col (or col 0)
+          'end_line (or end-line line 1)
+          'end_col (or end-col col 999)))
+
+(define (display-result range val #:is-error [is-error #f] #:output [output ""])
   (define base
-    (hasheq 'line (or line 1)
-            'col (or col 0)
-            'end_line (or end-line line 1)
-            'end_col (or end-col col 999)
-            'result (if (exn? val) (exn-message val) (format "~v" val))
-            'is_error is-error
-            'output output))
+    (hash-set* range
+               'result (if (exn? val) (exn-message val) (format "~v" val))
+               'is_error is-error
+               'output output))
   (displayln (jsexpr->string base) real-stdout)
   (flush-output real-stdout))
 
