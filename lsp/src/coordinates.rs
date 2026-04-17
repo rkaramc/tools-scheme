@@ -15,6 +15,7 @@ pub enum OffsetUnit {
     /// UTF-16 code units (LSP protocol standard).
     Utf16,
     /// Unicode code points (Racket's `syntax-column`).
+    #[allow(dead_code)]
     CodePoint,
 }
 
@@ -32,9 +33,16 @@ impl LineIndex {
         Self { line_offsets }
     }
 
+    /// Access the pre-computed line offsets.
+    #[allow(unused)]
+    pub fn line_offsets(&self) -> &[usize] {
+        &self.line_offsets
+    }
+
     /// Convert a line number and column offset into a byte index into `text`.
     ///
     /// `line` is 0-indexed. `col` is 0-indexed in the specified `unit`.
+    #[allow(unused)]
     pub fn byte_offset(&self, text: &str, line: usize, col: usize, unit: OffsetUnit) -> usize {
         let line_start = self.line_start(line);
         let line_text = &text[line_start..];
@@ -60,6 +68,7 @@ impl LineIndex {
     /// Convert a Racket code-point column to an LSP UTF-16 column.
     ///
     /// `line` is 0-indexed. `code_point_col` is 0-indexed.
+    #[allow(unused)]
     pub fn code_point_to_utf16(&self, text: &str, line: usize, code_point_col: usize) -> u32 {
         let line_start = self.line_start(line);
         let line_text = &text[line_start..];
@@ -73,6 +82,7 @@ impl LineIndex {
     }
 
     /// Convert an LSP `Position` (0-indexed line, UTF-16 column) to a byte offset.
+    #[allow(unused)]
     pub fn lsp_position_to_byte(&self, text: &str, pos: Position) -> usize {
         self.byte_offset(text, pos.line as usize, pos.character as usize, OffsetUnit::Utf16)
     }
