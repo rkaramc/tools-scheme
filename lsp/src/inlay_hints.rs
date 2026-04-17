@@ -107,7 +107,7 @@ mod tests {
                 col: 5,
                 end_line: 1,
                 end_col: 6,
-                result: "void".to_string(),
+                result: "'void".to_string(),
                 is_error: false,
                 output: "hello world\nline 2".to_string(),
             }
