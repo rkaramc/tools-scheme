@@ -265,6 +265,9 @@ function startClient(context: vscode.ExtensionContext) {
         synchronize: {
             fileEvents: vscode.workspace.createFileSystemWatcher('**/*.{rkt,scm,ss}'),
         },
+        initializationOptions: {
+            racketPath: vscode.workspace.getConfiguration('scheme').get<string>('racketPath')
+        },
         outputChannel: outputChannel,
         middleware: {
             provideInlayHints: async (document, range, token, next) => {

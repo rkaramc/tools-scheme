@@ -74,9 +74,14 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         ..Default::default()
     })?;
 
-    let _initialization_params = connection.initialize(server_capabilities)?;
+    let initialization_params = connection.initialize(server_capabilities)?;
+    let racket_path = initialization_params
+        .get("initializationOptions")
+        .and_then(|opts| opts.get("racketPath"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
-    let evaluator = Evaluator::new()
+    let evaluator = Evaluator::new(racket_path)
         .map_err(|e| format!("Failed to initialize evaluator: {}", e))?;
 
     let state = Arc::new(RwLock::new(SharedState {
