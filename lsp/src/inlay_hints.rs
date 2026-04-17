@@ -10,8 +10,8 @@ pub fn results_to_hints(results: &[EvalResult], line_index: Option<&LineIndex>, 
             let output_trimmed = res.output.trim();
             
             // Determine the display value
-            let display_val = if (res.result == "void" || res.result == "#<void>") && !res.output.is_empty() {
-                res.output.lines().next().unwrap_or("void").trim().to_string()
+            let display_val = if (res.result == "'void" || res.result == "#<void>") && !res.output.is_empty() {
+                res.output.lines().next().unwrap_or("").trim().to_string()
             } else {
                 res.result.clone()
             };
