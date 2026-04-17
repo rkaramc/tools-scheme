@@ -68,7 +68,7 @@ function findInPath(binaryName: string): string | undefined {
 }
 
 /**
- * Resolves the path to the LSP binary, checking settings, environment, PATH, and development fallback.
+ * Resolves the path to the LSP binary, checking settings, environment, PATH, cargo home, and development fallback.
  */
 function resolveLspPath(context: vscode.ExtensionContext): string | undefined {
     const config = vscode.workspace.getConfiguration('scheme');
@@ -78,6 +78,7 @@ function resolveLspPath(context: vscode.ExtensionContext): string | undefined {
 
     let serverPath = customLspPath;
 
+    // 1. Environment Variable override
     if (!serverPath && envLspDir) {
         const envPath = path.join(envLspDir, binName);
         if (fs.existsSync(envPath)) {
@@ -85,10 +86,21 @@ function resolveLspPath(context: vscode.ExtensionContext): string | undefined {
         }
     }
 
+    // 2. System PATH
     if (!serverPath) {
         serverPath = findInPath(binName);
     }
 
+    // 3. Common installation paths (e.g., Cargo home)
+    if (!serverPath) {
+        const homeDir = os.homedir();
+        const cargoBinPath = path.join(homeDir, '.cargo', 'bin', binName);
+        if (fs.existsSync(cargoBinPath)) {
+            serverPath = cargoBinPath;
+        }
+    }
+
+    // 4. Development fallback
     if (!serverPath && context.extensionMode === vscode.ExtensionMode.Development) {
         const devPath = context.asAbsolutePath(path.join('..', '..', 'target', 'debug', binName));
         if (fs.existsSync(devPath)) {

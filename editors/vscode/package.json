@@ -4,6 +4,12 @@
     "description": "Language support for Scheme and Racket, including evaluation with inlay hints.",
     "version": "0.1.0",
     "publisher": "rkaramc",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/rkaramc/tools-scheme"
+    },
+    "homepage": "https://github.com/rkaramc/tools-scheme",
     "engines": {
         "vscode": "^1.75.0"
     },
