@@ -63,10 +63,8 @@ impl DocumentStore {
     }
 
     pub fn close(&mut self, uri: &str) {
-        if let Some(mut doc) = self.documents.remove(uri) {
-            if let Some(ref mut file) = doc.session_file {
-                let _ = file.flush();
-            }
+        if let Some(mut file) = self.documents.remove(uri).and_then(|d| d.session_file) {
+            let _ = file.flush();
         }
     }
 

@@ -33,8 +33,8 @@ struct SharedState {
 }
 
 enum EvalAction {
-    Evaluate { content: String, request_id: RequestId },
-    Parse { content: String },
+    Evaluate { content: String, request_id: RequestId, version: Option<i32> },
+    Parse { content: String, version: Option<i32> },
     Clear,
 }
 
@@ -123,13 +123,11 @@ fn eval_worker(
 ) {
     for task in rx {
         match task.action {
-            EvalAction::Evaluate { content, .. } => {
-                let log_handle = {
-                    let state_read = state.read().unwrap();
-                    let doc = state_read.document_store.get(&task.uri);
-                    doc.and_then(|d| d.session_file.as_ref())
-                       .and_then(|f| f.try_clone().ok())
-                };
+            EvalAction::Evaluate { content, version, .. } => {
+                let log_handle = state.read().unwrap()
+                    .document_store.get(&task.uri)
+                    .and_then(|d| d.session_file.as_ref())
+                    .and_then(|f| f.try_clone().ok());
 
                 let eval_results = evaluator.evaluate_str(&content, Some(&task.uri), log_handle.as_ref());
 
@@ -181,7 +179,7 @@ fn eval_worker(
                 let diag_params = PublishDiagnosticsParams {
                     uri: uri.clone(),
                     diagnostics,
-                    version: None,
+                    version,
                 };
                 let not = lsp_server::Notification::new(
                     PublishDiagnostics::METHOD.to_string(),
@@ -207,7 +205,7 @@ fn eval_worker(
                         message: format!("Evaluation error: {}", e),
                         ..Default::default()
                     }],
-                    version: None,
+                    version,
                 };
                 let not = lsp_server::Notification::new(
                     PublishDiagnostics::METHOD.to_string(),
@@ -217,7 +215,7 @@ fn eval_worker(
             }
         }
     }
-            EvalAction::Parse { content } => {
+            EvalAction::Parse { content, .. } => {
                 let parse_results = evaluator.parse_str(&content, Some(&task.uri));
                 if let Ok(results) = parse_results {
                     let mut lock = state.write().unwrap();
@@ -299,10 +297,11 @@ impl Server {
         if let Some(params) = cast_notification::<DidOpenTextDocument>(&not) {
             let uri = params.text_document.uri.to_string();
             let content = params.text_document.text.clone();
+            let version = params.text_document.version;
             self.state.write().unwrap().document_store.open(params.text_document);
             let _ = self.eval_tx.send(EvalTask {
                 uri,
-                action: EvalAction::Parse { content },
+                action: EvalAction::Parse { content, version: Some(version) },
             });
         } else if let Some(params) = cast_notification::<DidChangeTextDocument>(&not) {
             let uri = params.text_document.uri.to_string();
@@ -314,9 +313,10 @@ impl Server {
             );
             if let Some(doc) = state.document_store.get(&uri) {
                 let content = doc.text.clone();
+                let version = doc.version;
                 let _ = self.eval_tx.send(EvalTask {
                     uri,
-                    action: EvalAction::Parse { content },
+                    action: EvalAction::Parse { content, version: Some(version) },
                 });
             }
         } else if let Some(params) = cast_notification::<DidCloseTextDocument>(&not) {
@@ -349,56 +349,58 @@ impl Server {
     }
 
     fn handle_execute_command(&mut self, connection: &Connection, id: RequestId, params: lsp_types::ExecuteCommandParams) -> Result<(), Box<dyn Error + Sync + Send>> {
-        if params.command == "scheme.evaluate" || params.command == "scheme.evaluateSelection" {
-            if let Some(arg) = params.arguments.first() {
-                if let Some(uri_str) = arg.as_str() {
-                    let uri_str = uri_str.to_string();
-                    let uri = lsp_types::Url::parse(&uri_str)?;
+        let uri_str = match (params.command.as_str(), params.arguments.first().and_then(|a| a.as_str())) {
+            ("scheme.evaluate" | "scheme.evaluateSelection", Some(u)) => u,
+            _ => {
+                let resp = Response::new_ok(id, json!(null));
+                connection.sender.send(Message::Response(resp))?;
+                return Ok(());
+            }
+        };
 
-                    // Snapshot the content to evaluate at dispatch time.
-                    let content_snapshot = if params.command == "scheme.evaluateSelection" {
-                        params.arguments.get(1)
-                            .and_then(|a| a.as_str())
-                            .map(|s| s.to_string())
-                    } else {
-                        let state = self.state.read().unwrap();
-                        state.document_store.get(&uri_str)
-                            .map(|d| d.text.clone())
-                            .or_else(|| uri.to_file_path().ok()
-                                .and_then(|p| std::fs::read_to_string(p).ok()))
-                    };
+        let uri_str = uri_str.to_string();
+        let uri = lsp_types::Url::parse(&uri_str)?;
 
-                    match content_snapshot {
-                        Some(content) => {
-                            // Dispatch to worker. Returns immediately.
-                            let _ = self.eval_tx.send(EvalTask {
-                                uri: uri_str,
-                                action: EvalAction::Evaluate {
-                                    content,
-                                    request_id: id.clone(),
-                                },
-                            });
+        // Snapshot the content and version to evaluate at dispatch time.
+        let (content_snapshot, version_snapshot) = if params.command == "scheme.evaluateSelection" {
+            let content = params.arguments.get(1)
+                .and_then(|a| a.as_str())
+                .map(|s| s.to_string());
+            (content, None)
+        } else {
+            let state = self.state.read().unwrap();
+            let doc = state.document_store.get(&uri_str);
+            let content = doc.map(|d| d.text.clone())
+                .or_else(|| uri.to_file_path().ok()
+                    .and_then(|p| std::fs::read_to_string(p).ok()));
+            (content, doc.map(|d| d.version))
+        };
 
-                            // Acknowledge the request immediately. Results arrive
-                            // via PublishDiagnostics and inlayHint/refresh notifications.
-                            let resp = Response::new_ok(id, json!(null));
-                            connection.sender.send(Message::Response(resp))?;
-                        }
-                        None => {
-                            let resp = Response::new_err(
-                                id,
-                                lsp_server::ErrorCode::InvalidParams as i32,
-                                "Could not find file or buffer content".to_string(),
-                            );
-                            connection.sender.send(Message::Response(resp))?;
-                        }
-                    }
-                    return Ok(());
-                }
+        match content_snapshot {
+            Some(content) => {
+                // Dispatch to worker. Returns immediately.
+                let _ = self.eval_tx.send(EvalTask {
+                    uri: uri_str,
+                    action: EvalAction::Evaluate {
+                        content,
+                        request_id: id.clone(),
+                        version: version_snapshot,
+                    },
+                });
+
+                // Acknowledge the request immediately.
+                let resp = Response::new_ok(id, json!(null));
+                connection.sender.send(Message::Response(resp))?;
+            }
+            None => {
+                let resp = Response::new_err(
+                    id,
+                    lsp_server::ErrorCode::InvalidParams as i32,
+                    "Could not find file or buffer content".to_string(),
+                );
+                connection.sender.send(Message::Response(resp))?;
             }
         }
-        let resp = Response::new_ok(id, json!(null));
-        connection.sender.send(Message::Response(resp))?;
         Ok(())
     }
 
@@ -423,32 +425,30 @@ impl Server {
         let state = self.state.read().unwrap();
         let mut lenses = Vec::new();
 
-        if let Some(doc) = state.document_store.get(&uri_str) {
-            if let Some(ranges) = state.ranges.get(&uri_str) {
-                for range in ranges {
-                    let start_idx = doc.line_index.lsp_position_to_byte(&doc.text, range.start);
-                    let end_idx = doc.line_index.lsp_position_to_byte(&doc.text, range.end);
-                    // Clamp to text length
-                    let end_idx = end_idx.min(doc.text.len());
-    
-                    let selected_text = if start_idx < end_idx {
-                        &doc.text[start_idx..end_idx]
-                    } else {
-                        ""
-                    };
-    
-                    let cmd = Command {
-                        title: "▶ Evaluate".to_string(),
-                        command: "scheme.evaluateSelection".to_string(),
-                        arguments: Some(vec![json!(uri_str), json!(selected_text)]),
-                    };
-    
-                    lenses.push(CodeLens {
-                        range: *range,
-                        command: Some(cmd),
-                        data: None,
-                    });
-                }
+        if let (Some(doc), Some(ranges)) = (state.document_store.get(&uri_str), state.ranges.get(&uri_str)) {
+            for range in ranges {
+                let start_idx = doc.line_index.lsp_position_to_byte(&doc.text, range.start);
+                let end_idx = doc.line_index.lsp_position_to_byte(&doc.text, range.end);
+                // Clamp to text length
+                let end_idx = end_idx.min(doc.text.len());
+
+                let selected_text = if start_idx < end_idx {
+                    &doc.text[start_idx..end_idx]
+                } else {
+                    ""
+                };
+
+                let cmd = Command {
+                    title: "▶ Evaluate".to_string(),
+                    command: "scheme.evaluateSelection".to_string(),
+                    arguments: Some(vec![json!(uri_str), json!(selected_text)]),
+                };
+
+                lenses.push(CodeLens {
+                    range: *range,
+                    command: Some(cmd),
+                    data: None,
+                });
             }
         }
 
@@ -463,11 +463,7 @@ where
     R: lsp_types::request::Request,
     R::Params: serde::de::DeserializeOwned,
 {
-    if req.method == R::METHOD {
-        serde_json::from_value(req.params.clone()).ok()
-    } else {
-        None
-    }
+    (req.method == R::METHOD).then(|| serde_json::from_value(req.params.clone()).ok()).flatten()
 }
 
 fn cast_notification<N>(not: &lsp_server::Notification) -> Option<N::Params>
@@ -475,9 +471,5 @@ where
     N: lsp_types::notification::Notification,
     N::Params: serde::de::DeserializeOwned,
 {
-    if not.method == N::METHOD {
-        serde_json::from_value(not.params.clone()).ok()
-    } else {
-        None
-    }
+    (not.method == N::METHOD).then(|| serde_json::from_value(not.params.clone()).ok()).flatten()
 }
