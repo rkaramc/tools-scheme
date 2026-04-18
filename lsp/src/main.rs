@@ -123,18 +123,20 @@ fn eval_worker(
     for task in rx {
         match task.action {
             EvalAction::Evaluate { content, version, .. } => {
-                let log_handle = state.read().unwrap()
-                    .document_store.get(&task.uri)
-                    .and_then(|d| d.session_file.as_ref())
-                    .and_then(|f| f.try_clone().ok());
-
-                let eval_results = evaluator.evaluate_str(&content, Some(&task.uri), log_handle.as_ref());
-
                 let uri_str = task.uri.clone();
                 let uri = match lsp_types::Url::parse(&uri_str) {
                     Ok(u) => u,
                     Err(_) => continue,
                 };
+                let context_label = uri.to_file_path().ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+
+                let log_handle = state.read().unwrap()
+                    .document_store.get(&uri_str)
+                    .and_then(|d| d.session_file.as_ref())
+                    .and_then(|f| f.try_clone().ok());
+
+                let eval_results = evaluator.evaluate_str(&content, Some(&uri_str), context_label.as_deref(), log_handle.as_ref());
 
                 match eval_results {
                     Ok(results) => {

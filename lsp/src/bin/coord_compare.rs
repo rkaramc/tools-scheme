@@ -26,7 +26,8 @@ fn main() -> anyhow::Result<()> {
     // 2. Run eval-shim via Evaluator
     let mut ev = evaluator::Evaluator::new(None)?;
     let uri = format!("file:///{}", std::fs::canonicalize(input_path)?.to_string_lossy().replace('\\', "/"));
-    let results = ev.evaluate_str(&text, Some(&uri), None)?;
+    let context_label = std::path::Path::new(input_path).file_name().map(|n| n.to_string_lossy().into_owned());
+    let results = ev.evaluate_str(&text, Some(&uri), context_label.as_deref(), None)?;
 
     let valid_results: Vec<_> = results.into_iter().filter(|r| !r.is_error).collect();
     let hints = inlay_hints::results_to_hints(&valid_results, Some(&index), Some(&text));
