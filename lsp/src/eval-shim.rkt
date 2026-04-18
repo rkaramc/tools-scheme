@@ -3,207 +3,22 @@
 (require json racket/exn)
 
 (define real-stdout (current-output-port))
-
-;; Current one-shot evaluation logic
-(define (evaluate-file path)
-  (define target-path
-    (if (string=? path "-")
-        (let ([tmp (make-temporary-file "eval-shim-~a.rkt")])
-          (with-output-to-file tmp #:exists 'replace
-            (lambda () (copy-port (current-input-port) (current-output-port))))
-          tmp)
-        path))
-
-  (define port (open-input-file target-path))
-  (port-count-lines! port)
-
-  (parameterize ([read-accept-reader #t]
-                 [read-accept-lang #t]
-                 [current-namespace (make-base-namespace)])
-    (let loop ()
-      (define pos (file-position port))
-      (with-handlers ([exn:fail? (lambda (e)
-                                   (define-values (l c end-c) (get-exn-location e #f target-path))
-                                   (display-result (make-range l c l end-c) e #:is-error #t)
-                                   (file-position port pos)
-                                   (read-line port)
-                                   (loop))])
-        (define stx (read-syntax target-path port))
-        (unless (eof-object? stx)
-          (with-handlers ([exn:fail? (lambda (e)
-                                       (define-values (l c end-c) (get-exn-location e stx target-path))
-                                       (display-result (make-range l c l end-c) e #:is-error #t)
-                                       (loop))])
-
-            (define expanded (expand stx))
-            (syntax-case expanded (module)
-              [(module name lang (mb . body))
-               (let ([m-name (syntax-e #'name)])
-                 (eval expanded)
-                 (dynamic-require `(quote ,m-name) #f)
-                 (define ns (module->namespace `(quote ,m-name)))
-                 (for ([form (syntax->list #'body)])
-                   (evaluate-single-form form ns target-path)))]
-              [_
-               (evaluate-single-form stx (current-namespace) target-path)])
-            (loop))))))
-
-  (when (string=? path "-") (delete-file target-path)))
-
-(define (evaluate-single-form stx ns target-path)
-  (with-handlers ([exn:fail? (lambda (e)
-                               (define-values (l c end-c) (get-exn-location e stx target-path))
-                               (display-result (make-range l (or (syntax-column stx) 0) l end-c) e #:is-error #t))])
-    (define capture-port (open-output-string))
-    (define result
-      (parameterize ([current-output-port capture-port]
-                     [current-namespace ns])
-        (eval stx)))
-    (define captured (get-output-string capture-port))
-
-    (define-values (end-line end-col) (get-syntax-end stx target-path))
-    (define start-line (or (syntax-line stx) 1))
-    (define start-col (or (syntax-column stx) 0))
-
-    (cond
-      [(not (void? result))
-       (display-result (make-range start-line start-col end-line end-col) result #:output captured)]
-      [(not (string=? captured ""))
-       (display-result (make-range start-line start-col end-line end-col) 'void #:output captured)])))
-
-;; Persistent REPL logic
+(define file-content-cache (make-hash))
 (define document-namespaces (make-hash))
 
-(define (run-repl)
-  (parameterize ([read-accept-reader #t]
-                 [read-accept-lang #t])
-    (let loop ()
-      (define input (read-line))
-      (unless (eof-object? input)
-        (with-handlers ([exn:fail? (lambda (e)
-                                     (display-result (make-range 1 0 1 0) e #:is-error #t)
-                                     (displayln "READY" real-stdout)
-                                     (flush-output real-stdout)
-                                     (loop))])
-          (let ([json-input (string->jsexpr input)])
-            (define type (hash-ref json-input 'type))
-            (define uri (hash-ref json-input 'uri #f))
+;; --- Helpers ---
 
-            (cond
-              [(string=? type "evaluate")
-               (evaluate-string-content (hash-ref json-input 'content) uri)]
-              [(string=? type "parse")
-               (parse-string-content (hash-ref json-input 'content) uri)]
-              [(string=? type "clear-namespace")
-               (when uri
-                 (hash-remove! document-namespaces uri))]
-              [else
-               (eprintf "Unknown REPL command type: ~a\n" type)]))
-          (displayln "READY" real-stdout)
-          (flush-output real-stdout)
-          (loop))))))
+(define (normalize-content! content source)
+  (define normalized (string-replace content "\r\n" "\n"))
+  (hash-set! file-content-cache source normalized)
+  normalized)
 
-(define (parse-string-content content uri)
-  (define source (or uri 'parser))
-  (define normalized-content (string-replace content "\r\n" "\n"))
-  (hash-set! file-content-cache source normalized-content)
-  (define port (open-input-string normalized-content))
-  (port-count-lines! port)
-  (let loop ()
-    (define pos (file-position port))
-    (with-handlers ([exn:fail? (lambda (e)
-                                 (define-values (l c end-c) (get-exn-location e #f source))
-                                 (display-result (make-range l c l end-c) e #:is-error #t)
-                                 (file-position port pos)
-                                 (read-line port)
-                                 (loop))])
-      (define stx (read-syntax source port))
-      (unless (eof-object? stx)
-        (define-values (end-line end-col) (get-syntax-end stx source))
-        (define start-line (or (syntax-line stx) 1))
-        (define start-col (or (syntax-column stx) 0))
-        (define range (hash-set (make-range start-line start-col end-line end-col) 'type "range"))
-        (displayln (jsexpr->string range) real-stdout)
-        (loop))))
-  )
-
-(define (evaluate-string-content content uri)
-  (define source (or uri 'repl))
-  (define normalized-content (string-replace content "\r\n" "\n"))
-  (hash-set! file-content-cache source normalized-content)
-  (define port (open-input-string normalized-content))
-  (port-count-lines! port)
-
-  (define ns
-    (if uri
-        (hash-ref! document-namespaces uri (lambda () (make-base-namespace)))
-        (current-namespace)))
-
-  (parameterize ([current-namespace ns])
-    (let loop ()
-      (define pos (file-position port))
-      (with-handlers ([exn:fail? (lambda (e)
-                                   (define-values (l c end-c) (get-exn-location e #f source))
-                                   (display-result (make-range l c l end-c) e #:is-error #t)
-                                   (file-position port pos)
-                                   (read-line port)
-                                   (loop))])
-        (define stx (read-syntax source port))
-        (unless (eof-object? stx)
-          (with-handlers ([exn:fail? (lambda (e)
-                                       (define-values (l c end-c) (get-exn-location e stx source))
-                                       (display-result (make-range l (or (syntax-column stx) 0) l end-c) e #:is-error #t)
-                                       (loop))])
-            (define expanded (expand stx))
-            (syntax-case expanded (module)
-              [(module name lang (mb . body))
-               (let ([m-name (syntax-e #'name)])
-                 (eval expanded)
-                 (dynamic-require `(quote ,m-name) #f)
-                 (define ns (module->namespace `(quote ,m-name)))
-                 (for ([form (syntax->list #'body)])
-                   (evaluate-single-form form ns source)))]
-              [_
-               (evaluate-single-form stx (current-namespace) source)])
-            (loop)))))))
-
-
-
-(define file-content-cache (make-hash))
 (define (get-normalized-content path)
-  (if (symbol? path)
-      "" ;; No content for REPL symbols
+  (if (or (not path) (symbol? path))
+      ""
       (hash-ref! file-content-cache path
                  (lambda ()
                    (string-replace (file->string path) "\r\n" "\n")))))
-
-(define (get-exn-location e stx target-path)
-  (let ([loc (and (exn:srclocs? e)
-                  (pair? ((exn:srclocs-accessor e) e))
-                  (car ((exn:srclocs-accessor e) e)))])
-    (if (and loc (srcloc-line loc) (srcloc-column loc))
-        (values (srcloc-line loc) (srcloc-column loc) (+ (srcloc-column loc) (or (srcloc-span loc) 0)))
-        (let-values ([(l c) (get-syntax-end stx target-path)])
-          (values l (or (syntax-column stx) 0) c)))))
-
-(define (get-syntax-end stx target-path)
-  (let ([pos (and stx (syntax-position stx))]
-        [span (and stx (syntax-span stx))]
-        [line (and stx (syntax-line stx))]
-        [col (and stx (syntax-column stx))])
-    (if (and stx (not (symbol? target-path)) pos span line col)
-        (let* ([content (get-normalized-content target-path)]
-               ;; Substring can be out of bounds if file changed, so guard it
-               [sub (if (<= (+ pos -1 span) (string-length content))
-                        (substring content (- pos 1) (+ pos -1 span))
-                        "")]
-               [lines (string-split sub "\n" #:trim? #f)])
-          (if (<= (length lines) 1)
-              (values line (+ col span))
-              (let ([last-line (last lines)])
-                (values (+ line (length lines) -1)
-                        (string-length last-line)))))
-        (values (or line 1) (+ (or col 0) (or span 0))))))
 
 (define (make-range line col end-line end-col)
   (hasheq 'line (or line 1)
@@ -219,6 +34,157 @@
                'output output))
   (displayln (jsexpr->string base) real-stdout)
   (flush-output real-stdout))
+
+(define (get-syntax-end stx)
+  (let ([pos (and stx (syntax-position stx))]
+        [span (and stx (syntax-span stx))]
+        [line (and stx (syntax-line stx))]
+        [col (and stx (syntax-column stx))]
+        [source (and stx (syntax-source stx))])
+    (if (and stx (not (symbol? source)) pos span line col)
+        (let* ([content (get-normalized-content source)]
+               [sub (if (<= (+ pos -1 span) (string-length content))
+                        (substring content (- pos 1) (+ pos -1 span))
+                        "")]
+               [lines (string-split sub "\n" #:trim? #f)])
+          (if (<= (length lines) 1)
+              (values line (+ col span))
+              (let ([last-line (last lines)])
+                (values (+ line (length lines) -1)
+                        (string-length last-line)))))
+        (values (or line 1) (+ (or col 0) (or span 0))))))
+
+(define (get-exn-location e stx)
+  (let ([loc (and (exn:srclocs? e)
+                  (pair? ((exn:srclocs-accessor e) e))
+                  (car ((exn:srclocs-accessor e) e)))])
+    (if (and loc (srcloc-line loc) (srcloc-column loc))
+        (values (srcloc-line loc) (srcloc-column loc) (+ (srcloc-column loc) (or (srcloc-span loc) 0)))
+        (let-values ([(l c) (get-syntax-end stx)])
+          (values l (or (and stx (syntax-column stx)) 0) c)))))
+
+;; --- Core Evaluation Engine ---
+
+(define (for-each-syntax port source proc)
+  (let loop ()
+    (define pos (file-position port))
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (define-values (l c end-c) (get-exn-location e #f))
+                                 (display-result (make-range l c l end-c) e #:is-error #t)
+                                 (file-position port pos)
+                                 (read-line port)
+                                 (loop))])
+      (define stx (read-syntax source port))
+      (unless (eof-object? stx)
+        (proc stx)
+        (loop)))))
+
+(define (evaluate-single-form stx ns)
+  (with-handlers ([exn:fail? (lambda (e)
+                               (define-values (l c end-c) (get-exn-location e stx))
+                               (display-result (make-range l (or (syntax-column stx) 0) l end-c) e #:is-error #t))])
+    (define capture-port (open-output-string))
+    (define result
+      (parameterize ([current-output-port capture-port]
+                     [current-namespace ns])
+        (eval stx)))
+    (define captured (get-output-string capture-port))
+    (define-values (end-line end-col) (get-syntax-end stx))
+    (define start-line (or (syntax-line stx) 1))
+    (define start-col (or (syntax-column stx) 0))
+
+    (cond
+      [(not (void? result))
+       (display-result (make-range start-line start-col end-line end-col) result #:output captured)]
+      [(not (string=? captured ""))
+       (display-result (make-range start-line start-col end-line end-col) 'void #:output captured)])))
+
+(define (evaluate-port port source ns)
+  (parameterize ([current-namespace ns])
+    (for-each-syntax port source
+      (lambda (stx)
+        (with-handlers ([exn:fail? (lambda (e)
+                                     (define-values (l c end-c) (get-exn-location e stx))
+                                     (display-result (make-range l (or (syntax-column stx) 0) l end-c) e #:is-error #t))])
+          (define expanded (expand stx))
+          (syntax-case expanded (module)
+            [(module name lang (mb . body))
+             (let ([m-name (syntax-e #'name)])
+               (eval expanded)
+               (dynamic-require `(quote ,m-name) #f)
+               (define m-ns (module->namespace `(quote ,m-name)))
+               (for ([form (syntax->list #'body)])
+                 (evaluate-single-form form m-ns)))]
+            [_
+             (evaluate-single-form stx (current-namespace))]))))))
+
+;; --- Entry Points ---
+
+(define (evaluate-file path)
+  (define target-path
+    (if (string=? path "-")
+        (let ([tmp (make-temporary-file "eval-shim-~a.rkt")])
+          (with-output-to-file tmp #:exists 'replace
+            (lambda () (copy-port (current-input-port) (current-output-port))))
+          tmp)
+        path))
+
+  (define port (open-input-file target-path))
+  (port-count-lines! port)
+  (parameterize ([read-accept-reader #t]
+                 [read-accept-lang #t])
+    (evaluate-port port target-path (make-base-namespace)))
+
+  (when (string=? path "-") (delete-file target-path)))
+
+(define (parse-string-content content uri)
+  (define source (or uri 'parser))
+  (define normalized (normalize-content! content source))
+  (define port (open-input-string normalized))
+  (port-count-lines! port)
+  (for-each-syntax port source
+    (lambda (stx)
+      (define-values (end-line end-col) (get-syntax-end stx))
+      (define start-line (or (syntax-line stx) 1))
+      (define start-col (or (syntax-column stx) 0))
+      (define range (hash-set (make-range start-line start-col end-line end-col) 'type "range"))
+      (displayln (jsexpr->string range) real-stdout))))
+
+(define (evaluate-string-content content uri)
+  (define source (or uri 'repl))
+  (define normalized (normalize-content! content source))
+  (define port (open-input-string normalized))
+  (port-count-lines! port)
+  (define ns
+    (if uri
+        (hash-ref! document-namespaces uri (lambda () (make-base-namespace)))
+        (current-namespace)))
+  (parameterize ([read-accept-reader #t]
+                 [read-accept-lang #t])
+    (evaluate-port port source ns)))
+
+(define (run-repl)
+  (parameterize ([read-accept-reader #t]
+                 [read-accept-lang #t])
+    (let loop ()
+      (define input (read-line))
+      (unless (eof-object? input)
+        (with-handlers ([exn:fail? (lambda (e)
+                                     (display-result (make-range 1 0 1 0) e #:is-error #t)
+                                     (displayln "READY" real-stdout)
+                                     (flush-output real-stdout)
+                                     (loop))])
+          (let ([json-input (string->jsexpr input)])
+            (define type (hash-ref json-input 'type))
+            (define uri (hash-ref json-input 'uri #f))
+            (cond
+              [(string=? type "evaluate") (evaluate-string-content (hash-ref json-input 'content) uri)]
+              [(string=? type "parse") (parse-string-content (hash-ref json-input 'content) uri)]
+              [(string=? type "clear-namespace") (when uri (hash-remove! document-namespaces uri))]
+              [else (eprintf "Unknown REPL command type: ~a\n" type)]))
+          (displayln "READY" real-stdout)
+          (flush-output real-stdout)
+          (loop))))))
 
 (module+ main
   (require racket/cmdline)
