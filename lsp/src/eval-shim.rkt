@@ -130,12 +130,14 @@
                          (define expanded (expand stx))
                          (syntax-case expanded (module)
                            [(module name lang (mb . body))
-                            (let ([m-name (syntax-e #'name)])
-                              (eval expanded)
-                              (dynamic-require `(quote ,m-name) #f)
-                              (define m-ns (module->namespace `(quote ,m-name)))
-                              (for ([form (syntax->list #'body)])
-                                (evaluate-single-form form m-ns)))]
+                            (let ([m-ns (current-namespace)])
+                              (with-handlers ([exn:fail? (lambda (e)
+                                                           ;; If language requirement fails, try body anyway
+                                                           (for ([form (syntax->list #'body)])
+                                                             (evaluate-single-form form m-ns)))])
+                                (namespace-require (syntax->datum #'lang))
+                                (for ([form (syntax->list #'body)])
+                                  (evaluate-single-form form m-ns))))]
                            [_
                             (evaluate-single-form stx (current-namespace))]))))))
 
