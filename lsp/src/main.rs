@@ -34,6 +34,7 @@ enum EvalAction {
     Evaluate { content: String, #[allow(dead_code)] request_id: RequestId, version: Option<i32> },
     Parse { version: i32 },
     Clear,
+    Restart,
 }
 
 /// A request to perform an action in the evaluation worker thread.
@@ -270,6 +271,27 @@ fn eval_worker(
                 let mut lock = state.write().unwrap_or_else(|e| e.into_inner());
                 lock.ranges.remove(&task.uri);
             }
+            EvalAction::Restart => {
+                let _ = evaluator.restart();
+                // Clear all stored results and ranges since they might be invalid now
+                let mut lock = state.write().unwrap_or_else(|e| e.into_inner());
+                lock.results.clear();
+                lock.ranges.clear();
+                
+                // Trigger refreshes
+                let refresh_req = Request::new(
+                    RequestId::from(1000),
+                    "workspace/inlayHint/refresh".to_string(),
+                    json!(null),
+                );
+                let _ = sender.send(Message::Request(refresh_req));
+                let lens_refresh = Request::new(
+                    RequestId::from(1001),
+                    "workspace/codeLens/refresh".to_string(),
+                    json!(null),
+                );
+                let _ = sender.send(Message::Request(lens_refresh));
+            }
         }
     }
 }
@@ -360,6 +382,27 @@ impl Server {
     }
 
     fn handle_execute_command(&mut self, connection: &Connection, id: RequestId, params: lsp_types::ExecuteCommandParams) -> Result<(), Box<dyn Error + Sync + Send>> {
+        if params.command == "scheme.restartREPL" {
+            let _ = self.eval_tx.send(EvalTask {
+                uri: "".to_string(),
+                action: EvalAction::Restart,
+            });
+            let resp = Response::new_ok(id, json!(null));
+            connection.sender.send(Message::Response(resp))?;
+            return Ok(());
+        }
+
+        if params.command == "scheme.clearNamespace" {
+            let uri_str = params.arguments.get(0).and_then(|v| v.as_str()).ok_or("Missing URI argument")?.to_string();
+            let _ = self.eval_tx.send(EvalTask {
+                uri: uri_str,
+                action: EvalAction::Clear,
+            });
+            let resp = Response::new_ok(id, json!(null));
+            connection.sender.send(Message::Response(resp))?;
+            return Ok(());
+        }
+
         let uri_str = match (params.command.as_str(), params.arguments.first().and_then(|a| a.as_str())) {
             ("scheme.evaluate" | "scheme.evaluateSelection", Some(u)) => u,
             _ => {

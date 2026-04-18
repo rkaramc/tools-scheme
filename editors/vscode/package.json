@@ -32,6 +32,16 @@
                 "command": "scheme.runEvaluateSelection",
                 "title": "Evaluate Selection",
                 "icon": "$(play-circle)"
+            },
+            {
+                "command": "scheme.restartREPL",
+                "title": "Restart Scheme REPL",
+                "icon": "$(refresh)"
+            },
+            {
+                "command": "scheme.clearNamespace",
+                "title": "Clear Scheme Namespace",
+                "icon": "$(clear-all)"
             }
         ],
         "menus": {
