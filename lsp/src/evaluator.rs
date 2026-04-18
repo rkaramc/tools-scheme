@@ -159,16 +159,21 @@ impl Evaluator {
     pub fn evaluate(&mut self, target_path: &PathBuf) -> Result<Vec<EvalResult>> {
         let content = std::fs::read_to_string(target_path)?;
         let uri = format!("file:///{}", target_path.to_string_lossy());
-        self.evaluate_str(&content, Some(&uri), None)
+        let context_label = target_path.file_name().map(|n| n.to_string_lossy().into_owned());
+        self.evaluate_str(&content, Some(&uri), context_label.as_deref(), None)
     }
 
-    pub fn evaluate_str(&mut self, content: &str, uri: Option<&str>, log: Option<&File>) -> Result<Vec<EvalResult>> {
-
+    pub fn evaluate_str(&mut self, content: &str, uri: Option<&str>, context_label: Option<&str>, log: Option<&File>) -> Result<Vec<EvalResult>> {
         if let Some(mut file) = log {
-            writeln!(file, "\n--- EVAL INPUT ---\n{}\n--- EVAL OUTPUT ---", content)?;
+            if let Some(label) = context_label {
+                writeln!(file, "\n--- EVAL INPUT ({}) ---\n{}\n--- EVAL OUTPUT ---", label, content)?;
+            } else {
+                writeln!(file, "\n--- EVAL INPUT ---\n{}\n--- EVAL OUTPUT ---", content)?;
+            }
             file.flush()?;
         } else {
-            writeln!(&mut self.global_session, "\n--- EVAL INPUT (NO LOG) ---\n{}\n--- EVAL OUTPUT ---", content)?;
+            let label = context_label.or(uri).unwrap_or("UNKNOWN");
+            writeln!(&mut self.global_session, "\n--- EVAL INPUT NO LOG ({}) ---\n{}\n--- EVAL OUTPUT ---", label, content)?;
             self.global_session.flush()?;
         }
 
@@ -415,13 +420,13 @@ mod tests {
         evaluator.timeout = Duration::from_millis(500);
 
         // Infinite loop: (let loop () (loop))
-        let result = evaluator.evaluate_str("(let loop () (loop))", None, None);
+        let result = evaluator.evaluate_str("(let loop () (loop))", None, None, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("timed out"));
 
         // Verify recovery: subsequent evaluation should work (after restart)
         evaluator.timeout = Duration::from_secs(5);
-        let result = evaluator.evaluate_str("42", None, None).unwrap();
+        let result = evaluator.evaluate_str("42", None, None, None).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].result, "42");
     }
@@ -461,20 +466,20 @@ mod tests {
         let mut evaluator = Evaluator::new(None).unwrap();
         
         // 1. Define x in doc A
-        let res_a1 = evaluator.evaluate_str("(define x 42)", Some("file:///a.rkt"), None).unwrap();
+        let res_a1 = evaluator.evaluate_str("(define x 42)", Some("file:///a.rkt"), None, None).unwrap();
         assert!(res_a1.is_empty());
         
         // 2. Access x in doc A (should succeed)
-        let res_a2 = evaluator.evaluate_str("x", Some("file:///a.rkt"), None).unwrap();
+        let res_a2 = evaluator.evaluate_str("x", Some("file:///a.rkt"), None, None).unwrap();
         assert_eq!(res_a2[0].result, "42");
         
         // 3. Access x in doc B (should fail)
-        let res_b1 = evaluator.evaluate_str("x", Some("file:///b.rkt"), None).unwrap();
+        let res_b1 = evaluator.evaluate_str("x", Some("file:///b.rkt"), None, None).unwrap();
         assert!(res_b1[0].is_error, "x should be undefined in document B");
         
         // 4. Clear doc A and access x (should fail)
         evaluator.clear_namespace("file:///a.rkt").unwrap();
-        let res_a3 = evaluator.evaluate_str("x", Some("file:///a.rkt"), None).unwrap();
+        let res_a3 = evaluator.evaluate_str("x", Some("file:///a.rkt"), None, None).unwrap();
         assert!(res_a3[0].is_error, "x should be undefined in document A after clear");
     }
 
@@ -484,7 +489,7 @@ mod tests {
         evaluator.timeout = Duration::from_secs(5);
 
         let code = "1\n(unclosed-bracket\n2";
-        let results = evaluator.evaluate_str(code, Some("file:///test.rkt"), None).unwrap();
+        let results = evaluator.evaluate_str(code, Some("file:///test.rkt"), None, None).unwrap();
         
         let has_1 = results.iter().any(|r| r.result == "1");
         let has_error = results.iter().any(|r| r.is_error);
@@ -501,7 +506,7 @@ mod tests {
         evaluator.timeout = Duration::from_secs(5);
 
         let code = "1\n(define \n(error\n2";
-        let results = evaluator.evaluate_str(code, Some("file:///test.rkt"), None).unwrap();
+        let results = evaluator.evaluate_str(code, Some("file:///test.rkt"), None, None).unwrap();
         
         println!("RESULTS: {:#?}", results);
         
@@ -522,5 +527,36 @@ mod tests {
 
         // 2. Env var override logic (tested indirectly by the code structure)
         // We'll trust the unit logic here as spawning non-existent binaries would fail new().
+    }
+
+    #[test]
+    fn test_evaluate_str_logging() {
+        let mut evaluator = Evaluator::new(None).unwrap();
+        let temp_dir = std::env::temp_dir();
+        let log_path = temp_dir.join("test_eval_log.session");
+        
+        // Ensure file is clean
+        let _ = std::fs::remove_file(&log_path);
+        
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&log_path)
+            .unwrap();
+
+        let uri = if cfg!(windows) {
+            "file:///C:/path/to/test.rkt"
+        } else {
+            "file:///path/to/test.rkt"
+        };
+        
+        evaluator.evaluate_str("(define x 1)", Some(uri), Some("test.rkt"), Some(&file)).unwrap();
+        
+        let log_content = std::fs::read_to_string(&log_path).unwrap();
+        
+        assert!(log_content.contains("EVAL INPUT (test.rkt)"));
+
+        let _ = std::fs::remove_file(&log_path);
     }
 }
