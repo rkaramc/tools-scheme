@@ -131,7 +131,7 @@ fn eval_worker(
                 let context_label = uri.to_file_path().ok()
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
 
-                let log_handle = state.read().unwrap()
+                let log_handle = state.read().unwrap_or_else(|e| e.into_inner())
                     .document_store.get(&uri_str)
                     .and_then(|d| d.session_file.as_ref())
                     .and_then(|f| f.try_clone().ok());
@@ -143,7 +143,7 @@ fn eval_worker(
                         // Build diagnostics while we still have the results in hand,
                         // before acquiring the write lock.
                         let diagnostics: Vec<Diagnostic> = {
-                            let state_read = state.read().unwrap();
+                            let state_read = state.read().unwrap_or_else(|e| e.into_inner());
                             let doc = state_read.document_store.get(&uri_str);
                             results
                                 .iter()
@@ -173,7 +173,7 @@ fn eval_worker(
                         };
 
                         // Store results.
-                        state.write().unwrap().results.insert(uri_str.clone(), results);
+                        state.write().unwrap_or_else(|e| e.into_inner()).results.insert(uri_str.clone(), results);
 
                         // Publish diagnostics.
                         let diag_params = PublishDiagnosticsParams {
@@ -218,7 +218,7 @@ fn eval_worker(
             EvalAction::Parse { content, .. } => {
                 let parse_results = evaluator.parse_str(&content, Some(&task.uri));
                 if let Ok(results) = parse_results {
-                    let mut lock = state.write().unwrap();
+                    let mut lock = state.write().unwrap_or_else(|e| e.into_inner());
                     let uri_str = task.uri.clone();
                     
                     let lsp_ranges: Vec<Range> = if let Some(doc) = lock.document_store.get(&uri_str) {
@@ -254,7 +254,7 @@ fn eval_worker(
             }
             EvalAction::Clear => {
                 let _ = evaluator.clear_namespace(&task.uri);
-                let mut lock = state.write().unwrap();
+                let mut lock = state.write().unwrap_or_else(|e| e.into_inner());
                 lock.ranges.remove(&task.uri);
             }
         }
@@ -298,14 +298,14 @@ impl Server {
             let uri = params.text_document.uri.to_string();
             let content = params.text_document.text.clone();
             let version = params.text_document.version;
-            self.state.write().unwrap().document_store.open(params.text_document);
+            self.state.write().unwrap_or_else(|e| e.into_inner()).document_store.open(params.text_document);
             let _ = self.eval_tx.send(EvalTask {
                 uri,
                 action: EvalAction::Parse { content, version: Some(version) },
             });
         } else if let Some(params) = cast_notification::<DidChangeTextDocument>(&not) {
             let uri = params.text_document.uri.to_string();
-            let mut state = self.state.write().unwrap();
+            let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
             state.document_store.change(
                 &uri,
                 params.text_document.version,
@@ -321,7 +321,7 @@ impl Server {
             }
         } else if let Some(params) = cast_notification::<DidCloseTextDocument>(&not) {
             let uri = params.text_document.uri.to_string();
-            let mut state = self.state.write().unwrap();
+            let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
             state.document_store.close(&uri);
             state.results.remove(&uri);
             
@@ -368,7 +368,7 @@ impl Server {
                 .map(|s| s.to_string());
             (content, None)
         } else {
-            let state = self.state.read().unwrap();
+            let state = self.state.read().unwrap_or_else(|e| e.into_inner());
             let doc = state.document_store.get(&uri_str);
             let content = doc.map(|d| d.text.clone())
                 .or_else(|| uri.to_file_path().ok()
@@ -406,7 +406,7 @@ impl Server {
 
     fn handle_inlay_hints(&self, connection: &Connection, id: RequestId, params: InlayHintParams) -> Result<(), Box<dyn Error + Sync + Send>> {
         let uri = params.text_document.uri.to_string();
-        let state = self.state.read().unwrap();
+        let state = self.state.read().unwrap_or_else(|e| e.into_inner());
         let hints = if let Some(results) = state.results.get(&uri) {
             let doc = state.document_store.get(&uri);
             let doc_text = doc.map(|d| d.text.as_str());
@@ -422,7 +422,7 @@ impl Server {
 
     fn handle_code_lens(&self, connection: &Connection, id: RequestId, params: CodeLensParams) -> Result<(), Box<dyn Error + Sync + Send>> {
         let uri_str = params.text_document.uri.to_string();
-        let state = self.state.read().unwrap();
+        let state = self.state.read().unwrap_or_else(|e| e.into_inner());
         let mut lenses = Vec::new();
 
         if let (Some(doc), Some(ranges)) = (state.document_store.get(&uri_str), state.ranges.get(&uri_str)) {
@@ -472,4 +472,32 @@ where
     N::Params: serde::de::DeserializeOwned,
 {
     (not.method == N::METHOD).then(|| serde_json::from_value(not.params.clone()).ok()).flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, RwLock};
+    use std::thread;
+
+    #[test]
+    fn test_lock_poisoning_recovery() {
+        let state = Arc::new(RwLock::new(0));
+        let state_clone = Arc::clone(&state);
+        
+        let _ = thread::spawn(move || {
+            let mut lock = state_clone.write().unwrap();
+            *lock = 1;
+            panic!("Intentional panic to poison the lock");
+        }).join();
+
+        assert!(state.is_poisoned());
+
+        // This should not panic after our fix
+        let mut lock = state.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *lock = 2;
+        drop(lock);
+
+        let read_lock = state.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(*read_lock, 2);
+    }
 }
