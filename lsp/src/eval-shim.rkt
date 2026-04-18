@@ -11,12 +11,11 @@
 (define cache-access-log (make-hash))
 (define document-namespaces (make-hash))
 
-(define (normalize-content! content source)
+(define (cache-content! content source)
   (set! cache-counter (+ cache-counter 1))
   (hash-set! cache-access-log source cache-counter)
 
-  (define normalized (string-replace content "\r\n" "\n"))
-  (hash-set! file-content-cache source normalized)
+  (hash-set! file-content-cache source content)
 
   ;; Evict if too large
   (when (> (hash-count file-content-cache) MAX-CACHE-SIZE)
@@ -28,9 +27,9 @@
       (hash-remove! file-content-cache oldest-source)
       (hash-remove! cache-access-log oldest-source)))
 
-  normalized)
+  content)
 
-(define (get-normalized-content path)
+(define (get-cached-content path)
   (if (or (not path) (symbol? path))
       ""
       (begin
@@ -38,7 +37,7 @@
         (hash-set! cache-access-log path cache-counter)
         (hash-ref! file-content-cache path
                    (lambda ()
-                     (string-replace (file->string path) "\r\n" "\n"))))))
+                     (file->string path))))))
 
 (define (make-range line col end-line end-col span pos)
   (hasheq 'line (or line 1)
@@ -161,8 +160,8 @@
 
 (define (parse-string-content content uri)
   (define source (or uri 'parser))
-  (define normalized (normalize-content! content source))
-  (define port (open-input-string normalized))
+  (define cached (cache-content! content source))
+  (define port (open-input-string cached))
   (port-count-lines! port)
   (for-each-syntax port source
                    (lambda (stx)
@@ -176,8 +175,8 @@
 
 (define (evaluate-string-content content uri)
   (define source (or uri 'repl))
-  (define normalized (normalize-content! content source))
-  (define port (open-input-string normalized))
+  (define cached (cache-content! content source))
+  (define port (open-input-string cached))
   (port-count-lines! port)
   (define ns
     (if uri
