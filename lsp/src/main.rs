@@ -85,7 +85,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             format!("Failed to initialize evaluator: {}", e)
         })?;
 
-    eprintln!("LSP Initialization: Racket Evaluator started successfully using binary at {}", evaluator.racket_path());
+    eprintln!("LSP Initialization: Racket Evaluator started successfully.");
+    eprintln!("LSP Initialization: Racket binary: {}", evaluator.racket_path());
+    eprintln!("LSP Initialization: Session log: {}", evaluator.session_path().display());
 
     let state = Arc::new(RwLock::new(SharedState {
         results: HashMap::new(),
