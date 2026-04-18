@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use lsp_types::{TextDocumentItem, TextDocumentContentChangeEvent};
+use url::Url;
 use crate::coordinates::LineIndex;
 use std::io::Write;
 use std::fs::{File, OpenOptions};
@@ -26,7 +27,7 @@ impl DocumentStore {
     pub fn open(&mut self, item: TextDocumentItem) {
         let line_index = LineIndex::new(&item.text);
         
-        let session_file = if let Ok(path) = item.uri.to_file_path() {
+        let session_file = if let Ok(path) = Url::parse(item.uri.as_str()).map_err(|_| ()).and_then(|u| u.to_file_path()) {
             let mut log_path = path;
             let filename = log_path.file_name().unwrap_or_default().to_os_string();
             log_path.set_file_name(format!("{}.session", filename.to_string_lossy()));

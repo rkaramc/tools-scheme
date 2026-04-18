@@ -11,7 +11,8 @@ use lsp_types::{
     TextDocumentSyncKind, WorkDoneProgressOptions,
 };
 use serde_json::json;
-use std::collections::HashMap;
+use url::Url;
+use std::{collections::HashMap, str::FromStr};
 use std::error::Error;
 use std::sync::{Arc, RwLock};
 
@@ -130,11 +131,12 @@ fn eval_worker(
         match task.action {
             EvalAction::Evaluate { content, version, .. } => {
                 let uri_str = task.uri.clone();
-                let uri = match lsp_types::Url::parse(&uri_str) {
+                let uri = match lsp_types::Uri::from_str(&uri_str) {
                     Ok(u) => u,
                     Err(_) => continue,
                 };
-                let context_label = uri.to_file_path().ok()
+                let context_label = Url::parse(uri.as_str()).ok()
+                    .and_then(|u| u.to_file_path().ok())
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
 
                 let log_handle = state.read().unwrap_or_else(|e| e.into_inner())
@@ -413,7 +415,7 @@ impl Server {
         };
 
         let uri_str = uri_str.to_string();
-        let uri = lsp_types::Url::parse(&uri_str)?;
+        let uri = Url::parse(&uri_str)?;
 
         // Snapshot the content and version to evaluate at dispatch time.
         let (content_snapshot, version_snapshot) = if params.command == "scheme.evaluateSelection" {
