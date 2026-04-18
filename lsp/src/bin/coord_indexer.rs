@@ -2,10 +2,7 @@ use std::env;
 use std::fs;
 use std::io::Write;
 
-#[path = "../coordinates.rs"]
-mod coordinates;
-
-use coordinates::LineIndex;
+use scheme_toolbox_lsp::LineIndex;
 
 fn main() -> anyhow::Result<()> {
     // 1. Get file name from command line arguments
@@ -37,12 +34,6 @@ fn main() -> anyhow::Result<()> {
             text_len
         };
 
-        // If it's the very last offset and it's equal to text_len, 
-        // it might represent an empty line after a trailing newline.
-        // We skip it if the previous line already covered up to EOF,
-        // unless we want to represent that empty line.
-        // Standard behavior: text[start..end] gives the line content.
-        
         if start_offset > text_len {
             continue;
         }
@@ -61,6 +52,3 @@ fn main() -> anyhow::Result<()> {
     println!("Output written to {}", output_path);
     Ok(())
 }
-
-// I need to add a getter for line_offsets to LineIndex if it's not pub.
-// Wait, I should check coordinates.rs again.

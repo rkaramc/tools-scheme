@@ -1,15 +1,7 @@
 use std::env;
 use std::fs;
 
-#[path = "../coordinates.rs"]
-mod coordinates;
-use coordinates::LineIndex;
-
-#[path = "../evaluator.rs"]
-mod evaluator;
-
-#[path = "../inlay_hints.rs"]
-mod inlay_hints;
+use scheme_toolbox_lsp::{LineIndex, Evaluator, inlay_hints};
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -24,7 +16,7 @@ fn main() -> anyhow::Result<()> {
     let index = LineIndex::new(&text);
 
     // 2. Run eval-shim via Evaluator
-    let mut ev = evaluator::Evaluator::new(None)?;
+    let mut ev = Evaluator::new(None)?;
     let uri = format!("file:///{}", std::fs::canonicalize(input_path)?.to_string_lossy().replace('\\', "/"));
     let context_label = std::path::Path::new(input_path).file_name().map(|n| n.to_string_lossy().into_owned());
     let results = ev.evaluate_str(&text, Some(&uri), context_label.as_deref(), None)?;
@@ -87,4 +79,3 @@ fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
-
