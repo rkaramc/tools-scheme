@@ -14,7 +14,6 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::{Arc, RwLock};
-use std::sync::mpsc;
 
 mod coordinates;
 mod documents;
@@ -33,7 +32,7 @@ struct SharedState {
 
 enum EvalAction {
     Evaluate { content: String, #[allow(dead_code)] request_id: RequestId, version: Option<i32> },
-    Parse { content: String, #[allow(dead_code)] version: Option<i32> },
+    Parse { version: i32 },
     Clear,
 }
 
@@ -45,7 +44,7 @@ struct EvalTask {
 
 
 struct Server {
-    eval_tx: mpsc::SyncSender<EvalTask>,
+    eval_tx: crossbeam_channel::Sender<EvalTask>,
     state: Arc<RwLock<SharedState>>,
 }
 
@@ -94,10 +93,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         document_store: DocumentStore::new(),
     }));
 
-    // Channel capacity of 1: the worker processes one task at a time. A second
-    // send while one is in-flight will block the main loop briefly until the
-    // slot is free — acceptable, since evaluation is user-initiated.
-    let (eval_tx, eval_rx) = mpsc::sync_channel::<EvalTask>(1);
+    // Unbounded channel: dispatch is non-blocking. Stale Parse tasks are
+    // skipped in the worker by checking the current document version.
+    let (eval_tx, eval_rx) = crossbeam_channel::unbounded::<EvalTask>();
 
     // Spawn the eval worker. It owns the Evaluator (and thus the Racket REPL
     // child process) and is the only thread that ever calls into it.
@@ -121,7 +119,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 /// Background thread: receives EvalTask, evaluates, updates SharedState, sends notifications.
 fn eval_worker(
     mut evaluator: Evaluator,
-    rx: mpsc::Receiver<EvalTask>,
+    rx: crossbeam_channel::Receiver<EvalTask>,
     state: Arc<RwLock<SharedState>>,
     sender: crossbeam_channel::Sender<Message>,
 ) {
@@ -220,41 +218,57 @@ fn eval_worker(
                     }
                 }
             }
-            EvalAction::Parse { content, .. } => {
-                let parse_results = evaluator.parse_str(&content, Some(&task.uri));
-                if let Ok(results) = parse_results {
-                    let mut lock = state.write().unwrap_or_else(|e| e.into_inner());
-                    let uri_str = task.uri.clone();
-                    
-                    let lsp_ranges: Vec<Range> = if let Some(doc) = lock.document_store.get(&uri_str) {
-                         results.iter().map(|r| {
-                            let start_line = r.line.saturating_sub(1);
-                            let end_line = r.end_line.saturating_sub(1);
-                            let start_col = doc.line_index.code_point_to_utf16(&doc.text, start_line as usize, r.col as usize);
-                            let end_col = doc.line_index.code_point_to_utf16(&doc.text, end_line as usize, r.end_col as usize);
-                            Range::new(
-                                Position::new(start_line, start_col),
-                                Position::new(end_line, end_col),
-                            )
-                        }).collect()
+            EvalAction::Parse { version } => {
+                let (content, current_version) = {
+                    let lock = state.read().unwrap_or_else(|e| e.into_inner());
+                    if let Some(doc) = lock.document_store.get(&task.uri) {
+                        (Some(doc.text.clone()), Some(doc.version))
                     } else {
-                        results.iter().map(|r| {
-                            Range::new(
-                                Position::new(r.line.saturating_sub(1), r.col),
-                                Position::new(r.end_line.saturating_sub(1), r.end_col),
-                            )
-                        }).collect()
-                    };
-                    
-                    lock.ranges.insert(uri_str, lsp_ranges);
-                    
-                    // Ask the client to refresh code lenses
-                    let refresh_req = Request::new(
-                        RequestId::from(998),
-                        "workspace/codeLens/refresh".to_string(),
-                        json!(null),
-                    );
-                    let _ = sender.send(Message::Request(refresh_req));
+                        (None, None)
+                    }
+                };
+
+                // Skip if the document was closed or a newer version is already in the store.
+                if let (Some(c), Some(v)) = (content, current_version) {
+                    if v > version {
+                        continue;
+                    }
+
+                    let parse_results = evaluator.parse_str(&c, Some(&task.uri));
+                    if let Ok(results) = parse_results {
+                        let mut lock = state.write().unwrap_or_else(|e| e.into_inner());
+                        let uri_str = task.uri.clone();
+                        
+                        let lsp_ranges: Vec<Range> = if let Some(doc) = lock.document_store.get(&uri_str) {
+                             results.iter().map(|r| {
+                                let start_line = r.line.saturating_sub(1);
+                                let end_line = r.end_line.saturating_sub(1);
+                                let start_col = doc.line_index.code_point_to_utf16(&doc.text, start_line as usize, r.col as usize);
+                                let end_col = doc.line_index.code_point_to_utf16(&doc.text, end_line as usize, r.end_col as usize);
+                                Range::new(
+                                    Position::new(start_line, start_col),
+                                    Position::new(end_line, end_col),
+                                )
+                            }).collect()
+                        } else {
+                            results.iter().map(|r| {
+                                Range::new(
+                                    Position::new(r.line.saturating_sub(1), r.col),
+                                    Position::new(r.end_line.saturating_sub(1), r.end_col),
+                                )
+                            }).collect()
+                        };
+                        
+                        lock.ranges.insert(uri_str, lsp_ranges);
+                        
+                        // Ask the client to refresh code lenses
+                        let refresh_req = Request::new(
+                            RequestId::from(998),
+                            "workspace/codeLens/refresh".to_string(),
+                            json!(null),
+                        );
+                        let _ = sender.send(Message::Request(refresh_req));
+                    }
                 }
             }
             EvalAction::Clear => {
@@ -301,12 +315,11 @@ impl Server {
     fn handle_notification(&mut self, not: lsp_server::Notification) -> Result<(), Box<dyn Error + Sync + Send>> {
         if let Some(params) = cast_notification::<DidOpenTextDocument>(&not) {
             let uri = params.text_document.uri.to_string();
-            let content = params.text_document.text.clone();
             let version = params.text_document.version;
             self.state.write().unwrap_or_else(|e| e.into_inner()).document_store.open(params.text_document);
             let _ = self.eval_tx.send(EvalTask {
                 uri,
-                action: EvalAction::Parse { content, version: Some(version) },
+                action: EvalAction::Parse { version },
             });
         } else if let Some(params) = cast_notification::<DidChangeTextDocument>(&not) {
             let uri = params.text_document.uri.to_string();
@@ -317,11 +330,10 @@ impl Server {
                 params.content_changes,
             );
             if let Some(doc) = state.document_store.get(&uri) {
-                let content = doc.text.clone();
                 let version = doc.version;
                 let _ = self.eval_tx.send(EvalTask {
                     uri,
-                    action: EvalAction::Parse { content, version: Some(version) },
+                    action: EvalAction::Parse { version },
                 });
             }
         } else if let Some(params) = cast_notification::<DidCloseTextDocument>(&not) {
@@ -483,6 +495,20 @@ where
 mod tests {
     use std::sync::{Arc, RwLock};
     use std::thread;
+
+    #[test]
+    fn test_sender_non_blocking() {
+        let (tx, rx) = crossbeam_channel::unbounded::<i32>();
+        
+        // Sending multiple messages to an unbounded channel should never block
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        tx.send(3).unwrap();
+        
+        assert_eq!(rx.recv().unwrap(), 1);
+        assert_eq!(rx.recv().unwrap(), 2);
+        assert_eq!(rx.recv().unwrap(), 3);
+    }
 
     #[test]
     fn test_lock_poisoning_recovery() {
