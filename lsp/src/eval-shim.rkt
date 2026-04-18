@@ -2,23 +2,43 @@
 
 (require json racket/exn)
 
+(define cache-counter 0)
+(define MAX-CACHE-SIZE 100)
+(define MAX-OUTPUT-SIZE 10000)
+
 (define real-stdout (current-output-port))
 (define file-content-cache (make-hash))
+(define cache-access-log (make-hash))
 (define document-namespaces (make-hash))
 
-;; --- Helpers ---
-
 (define (normalize-content! content source)
+  (set! cache-counter (+ cache-counter 1))
+  (hash-set! cache-access-log source cache-counter)
+
   (define normalized (string-replace content "\r\n" "\n"))
   (hash-set! file-content-cache source normalized)
+
+  ;; Evict if too large
+  (when (> (hash-count file-content-cache) MAX-CACHE-SIZE)
+    (define-values (oldest-source _)
+      (for/fold ([min-s #f] [min-v +inf.0])
+                ([(s v) (in-hash cache-access-log)])
+        (if (< v min-v) (values s v) (values min-s min-v))))
+    (when oldest-source
+      (hash-remove! file-content-cache oldest-source)
+      (hash-remove! cache-access-log oldest-source)))
+
   normalized)
 
 (define (get-normalized-content path)
   (if (or (not path) (symbol? path))
       ""
-      (hash-ref! file-content-cache path
-                 (lambda ()
-                   (string-replace (file->string path) "\r\n" "\n")))))
+      (begin
+        (set! cache-counter (+ cache-counter 1))
+        (hash-set! cache-access-log path cache-counter)
+        (hash-ref! file-content-cache path
+                   (lambda ()
+                     (string-replace (file->string path) "\r\n" "\n"))))))
 
 (define (make-range line col end-line end-col)
   (hasheq 'line (or line 1)
@@ -26,12 +46,22 @@
           'end_line (or end-line line 1)
           'end_col (or end-col col 999)))
 
+(define (truncate-string str limit)
+  (if (> (string-length str) limit)
+      (string-append (substring str 0 limit) "... [truncated]")
+      str))
+
 (define (display-result range val #:is-error [is-error #f] #:output [output ""])
+  (define result-str
+    (truncate-string (if (exn? val) (exn-message val) (format "~v" val)) MAX-OUTPUT-SIZE))
+  (define output-str
+    (truncate-string output MAX-OUTPUT-SIZE))
+
   (define base
     (hash-set* range
-               'result (if (exn? val) (exn-message val) (format "~v" val))
+               'result result-str
                'is_error is-error
-               'output output))
+               'output output-str))
   (displayln (jsexpr->string base) real-stdout)
   (flush-output real-stdout))
 
@@ -102,21 +132,21 @@
 (define (evaluate-port port source ns)
   (parameterize ([current-namespace ns])
     (for-each-syntax port source
-      (lambda (stx)
-        (with-handlers ([exn:fail? (lambda (e)
-                                     (define-values (l c end-c) (get-exn-location e stx))
-                                     (display-result (make-range l (or (syntax-column stx) 0) l end-c) e #:is-error #t))])
-          (define expanded (expand stx))
-          (syntax-case expanded (module)
-            [(module name lang (mb . body))
-             (let ([m-name (syntax-e #'name)])
-               (eval expanded)
-               (dynamic-require `(quote ,m-name) #f)
-               (define m-ns (module->namespace `(quote ,m-name)))
-               (for ([form (syntax->list #'body)])
-                 (evaluate-single-form form m-ns)))]
-            [_
-             (evaluate-single-form stx (current-namespace))]))))))
+                     (lambda (stx)
+                       (with-handlers ([exn:fail? (lambda (e)
+                                                    (define-values (l c end-c) (get-exn-location e stx))
+                                                    (display-result (make-range l (or (syntax-column stx) 0) l end-c) e #:is-error #t))])
+                         (define expanded (expand stx))
+                         (syntax-case expanded (module)
+                           [(module name lang (mb . body))
+                            (let ([m-name (syntax-e #'name)])
+                              (eval expanded)
+                              (dynamic-require `(quote ,m-name) #f)
+                              (define m-ns (module->namespace `(quote ,m-name)))
+                              (for ([form (syntax->list #'body)])
+                                (evaluate-single-form form m-ns)))]
+                           [_
+                            (evaluate-single-form stx (current-namespace))]))))))
 
 ;; --- Entry Points ---
 
@@ -143,12 +173,12 @@
   (define port (open-input-string normalized))
   (port-count-lines! port)
   (for-each-syntax port source
-    (lambda (stx)
-      (define-values (end-line end-col) (get-syntax-end stx))
-      (define start-line (or (syntax-line stx) 1))
-      (define start-col (or (syntax-column stx) 0))
-      (define range (hash-set (make-range start-line start-col end-line end-col) 'type "range"))
-      (displayln (jsexpr->string range) real-stdout))))
+                   (lambda (stx)
+                     (define-values (end-line end-col) (get-syntax-end stx))
+                     (define start-line (or (syntax-line stx) 1))
+                     (define start-col (or (syntax-column stx) 0))
+                     (define range (hash-set (make-range start-line start-col end-line end-col) 'type "range"))
+                     (displayln (jsexpr->string range) real-stdout))))
 
 (define (evaluate-string-content content uri)
   (define source (or uri 'repl))
