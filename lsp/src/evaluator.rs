@@ -51,15 +51,23 @@ pub struct Evaluator {
     _shim_file: tempfile::NamedTempFile,
     timeout: Duration,
     global_session: std::fs::File,
+    global_session_path: PathBuf,
     racket_path: String,
 }
 
 impl Evaluator {
     pub fn new(racket_path: Option<String>) -> Result<Self> {
+        let temp_dir = std::env::temp_dir().join(TEMP_SUBDIR);
+        std::fs::create_dir_all(&temp_dir)?;
+
+        let random_suffix: String = std::iter::repeat_with(|| fastrand::lowercase()).take(8).collect();
+        let session_name = format!("global-{}.session", random_suffix);
+        let global_session_path = temp_dir.join(session_name);
+
         let mut global_session = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open("global.session")?;
+            .open(&global_session_path)?;
 
         let timeout_secs = std::env::var("TOOLS_SCHEME_EVAL_TIMEOUT")
             .ok()
@@ -75,9 +83,6 @@ impl Evaluator {
         Self::validate_racket_path(&final_racket_path, &mut global_session)?;
 
         // Prepare the embedded shim in a secure temporary location
-        let temp_dir = std::env::temp_dir().join(TEMP_SUBDIR);
-        std::fs::create_dir_all(&temp_dir)?;
-        
         let mut shim_file = tempfile::Builder::new()
             .prefix("eval-shim-")
             .suffix(".rkt")
@@ -93,12 +98,17 @@ impl Evaluator {
             _shim_file: shim_file,
             timeout,
             global_session,
+            global_session_path,
             racket_path: final_racket_path,
         })
     }
 
     pub fn racket_path(&self) -> &str {
         &self.racket_path
+    }
+
+    pub fn session_path(&self) -> &Path {
+        &self.global_session_path
     }
 
     fn validate_racket_path(path: &str, session_file: &mut File) -> Result<()> {
@@ -598,6 +608,17 @@ mod tests {
         // 1. Default (uses "racket")
         let ev_default = Evaluator::new(None).unwrap();
         assert_eq!(ev_default.racket_path, "racket");
+    }
+
+    #[test]
+    fn test_global_session_location() {
+        let local_session = std::path::Path::new("global.session");
+        // Cleanup if exists
+        let _ = std::fs::remove_file(local_session);
+
+        let _evaluator = Evaluator::new(None).unwrap();
+        
+        assert!(!local_session.exists(), "global.session should NOT be created in the current directory");
     }
 
     #[test]
