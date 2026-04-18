@@ -48,7 +48,7 @@ struct ProcessState {
 
 pub struct Evaluator {
     state: Option<ProcessState>,
-    _shim_file: tempfile::NamedTempFile,
+    shim_file: tempfile::NamedTempFile,
     timeout: Duration,
     global_session: std::fs::File,
     global_session_path: PathBuf,
@@ -95,7 +95,7 @@ impl Evaluator {
 
         Ok(Self {
             state: Some(state),
-            _shim_file: shim_file,
+            shim_file: shim_file,
             timeout,
             global_session,
             global_session_path,
@@ -109,6 +109,15 @@ impl Evaluator {
 
     pub fn session_path(&self) -> &Path {
         &self.global_session_path
+    }
+
+    pub fn restart(&mut self) -> Result<()> {
+        if let Some(mut state) = self.state.take() {
+            let _ = state.child.kill();
+            let _ = state.child.wait();
+        }
+        self.ensure_alive()?;
+        Ok(())
     }
 
     fn validate_racket_path(path: &str, session_file: &mut File) -> Result<()> {
@@ -212,7 +221,7 @@ impl Evaluator {
                 let _ = old_state.child.kill();
                 let _ = old_state.child.wait();
             }
-            self.state = Some(Self::spawn_process(&self.racket_path, self._shim_file.path(), &self.global_session)?);
+            self.state = Some(Self::spawn_process(&self.racket_path, self.shim_file.path(), &self.global_session)?);
         }
         
         Ok(self.state.as_mut().unwrap())
@@ -608,6 +617,25 @@ mod tests {
         // 1. Default (uses "racket")
         let ev_default = Evaluator::new(None).unwrap();
         assert_eq!(ev_default.racket_path, "racket");
+    }
+
+    #[test]
+    fn test_restart_clears_state() {
+        let mut evaluator = Evaluator::new(None).unwrap();
+        
+        // 1. Define x
+        evaluator.evaluate_str("(define x 42)", Some("file:///test.rkt"), None, None).unwrap();
+        
+        // 2. Verify x exists
+        let res = evaluator.evaluate_str("x", Some("file:///test.rkt"), None, None).unwrap();
+        assert_eq!(res[0].result, "42");
+        
+        // 3. Restart
+        evaluator.restart().unwrap();
+        
+        // 4. Verify x is gone
+        let res = evaluator.evaluate_str("x", Some("file:///test.rkt"), None, None).unwrap();
+        assert!(res[0].is_error, "x should be undefined after restart. Result: {:?}", res);
     }
 
     #[test]

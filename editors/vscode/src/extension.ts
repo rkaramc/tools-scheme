@@ -256,8 +256,54 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
 
+    const restartREPLCommand = vscode.commands.registerCommand('scheme.restartREPL', async () => {
+        if (!client) {
+            vscode.window.showErrorMessage('LSP Client not initialized.');
+            return;
+        }
+
+        try {
+            await client.sendRequest('workspace/executeCommand', {
+                command: 'scheme.restartREPL',
+                arguments: []
+            });
+            vscode.window.showInformationMessage('Scheme REPL restarted.');
+        } catch (err) {
+            outputChannel.appendLine(`Restart REPL failed: ${err}`);
+            vscode.window.showErrorMessage(`Failed to restart REPL: ${err}`);
+        }
+    });
+
+    const clearNamespaceCommand = vscode.commands.registerCommand('scheme.clearNamespace', async () => {
+        const activeEditor = vscode.window.activeTextEditor;
+        if (!activeEditor) {
+            vscode.window.showErrorMessage('No active editor to clear namespace for.');
+            return;
+        }
+
+        const uri = activeEditor.document.uri.toString();
+
+        if (!client) {
+            vscode.window.showErrorMessage('LSP Client not initialized.');
+            return;
+        }
+
+        try {
+            await client.sendRequest('workspace/executeCommand', {
+                command: 'scheme.clearNamespace',
+                arguments: [uri]
+            });
+            vscode.window.showInformationMessage('Scheme Namespace cleared.');
+        } catch (err) {
+            outputChannel.appendLine(`Clear Namespace failed: ${err}`);
+            vscode.window.showErrorMessage(`Failed to clear namespace: ${err}`);
+        }
+    });
+
     context.subscriptions.push(evaluateCommand);
     context.subscriptions.push(evaluateSelectionCommand);
+    context.subscriptions.push(restartREPLCommand);
+    context.subscriptions.push(clearNamespaceCommand);
 }
 
 function startClient(context: vscode.ExtensionContext) {
