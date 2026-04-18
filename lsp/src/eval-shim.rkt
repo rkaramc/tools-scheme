@@ -40,11 +40,13 @@
                    (lambda ()
                      (string-replace (file->string path) "\r\n" "\n"))))))
 
-(define (make-range line col end-line end-col)
+(define (make-range line col end-line end-col span pos)
   (hasheq 'line (or line 1)
           'col (or col 0)
           'end_line (or end-line line 1)
-          'end_col (or end-col col 999)))
+          'end_col (or end-col col 999)
+          'span (or span 0)
+          'pos (or pos 1)))
 
 (define (truncate-string str limit)
   (if (> (string-length str) limit)
@@ -69,29 +71,17 @@
   (let ([pos (and stx (syntax-position stx))]
         [span (and stx (syntax-span stx))]
         [line (and stx (syntax-line stx))]
-        [col (and stx (syntax-column stx))]
-        [source (and stx (syntax-source stx))])
-    (if (and stx (not (symbol? source)) pos span line col)
-        (let* ([content (get-normalized-content source)]
-               [sub (if (<= (+ pos -1 span) (string-length content))
-                        (substring content (- pos 1) (+ pos -1 span))
-                        "")]
-               [lines (string-split sub "\n" #:trim? #f)])
-          (if (<= (length lines) 1)
-              (values line (+ col span))
-              (let ([last-line (last lines)])
-                (values (+ line (length lines) -1)
-                        (string-length last-line)))))
-        (values (or line 1) (+ (or col 0) (or span 0))))))
+        [col (and stx (syntax-column stx))])
+    (values (or line 1) (+ (or col 0) (or span 0)))))
 
 (define (get-exn-location e stx)
   (let ([loc (and (exn:srclocs? e)
                   (pair? ((exn:srclocs-accessor e) e))
                   (car ((exn:srclocs-accessor e) e)))])
     (if (and loc (srcloc-line loc) (srcloc-column loc))
-        (values (srcloc-line loc) (srcloc-column loc) (+ (srcloc-column loc) (or (srcloc-span loc) 0)))
+        (values (srcloc-line loc) (srcloc-column loc) (+ (srcloc-column loc) (or (srcloc-span loc) 0)) (or (srcloc-span loc) 0) (srcloc-position loc))
         (let-values ([(l c) (get-syntax-end stx)])
-          (values l (or (and stx (syntax-column stx)) 0) c)))))
+          (values l (or (and stx (syntax-column stx)) 0) c (or (and stx (syntax-span stx)) 0) (or (and stx (syntax-position stx)) 1))))))
 
 ;; --- Core Evaluation Engine ---
 
@@ -99,8 +89,8 @@
   (let loop ()
     (define pos (file-position port))
     (with-handlers ([exn:fail? (lambda (e)
-                                 (define-values (l c end-c) (get-exn-location e #f))
-                                 (display-result (make-range l c l end-c) e #:is-error #t)
+                                 (define-values (l c end-c span byte-pos) (get-exn-location e #f))
+                                 (display-result (make-range l c l end-c span byte-pos) e #:is-error #t)
                                  (file-position port pos)
                                  (read-line port)
                                  (loop))])
@@ -111,8 +101,8 @@
 
 (define (evaluate-single-form stx ns)
   (with-handlers ([exn:fail? (lambda (e)
-                               (define-values (l c end-c) (get-exn-location e stx))
-                               (display-result (make-range l (or (syntax-column stx) 0) l end-c) e #:is-error #t))])
+                               (define-values (l c end-c span pos) (get-exn-location e stx))
+                               (display-result (make-range l (or (syntax-column stx) 0) l end-c span pos) e #:is-error #t))])
     (define capture-port (open-output-string))
     (define result
       (parameterize ([current-output-port capture-port]
@@ -122,20 +112,22 @@
     (define-values (end-line end-col) (get-syntax-end stx))
     (define start-line (or (syntax-line stx) 1))
     (define start-col (or (syntax-column stx) 0))
+    (define span (or (syntax-span stx) 0))
+    (define pos (or (syntax-position stx) 1))
 
     (cond
       [(not (void? result))
-       (display-result (make-range start-line start-col end-line end-col) result #:output captured)]
+       (display-result (make-range start-line start-col end-line end-col span pos) result #:output captured)]
       [(not (string=? captured ""))
-       (display-result (make-range start-line start-col end-line end-col) 'void #:output captured)])))
+       (display-result (make-range start-line start-col end-line end-col span pos) 'void #:output captured)])))
 
 (define (evaluate-port port source ns)
   (parameterize ([current-namespace ns])
     (for-each-syntax port source
                      (lambda (stx)
                        (with-handlers ([exn:fail? (lambda (e)
-                                                    (define-values (l c end-c) (get-exn-location e stx))
-                                                    (display-result (make-range l (or (syntax-column stx) 0) l end-c) e #:is-error #t))])
+                                                    (define-values (l c end-c span pos) (get-exn-location e stx))
+                                                    (display-result (make-range l (or (syntax-column stx) 0) l end-c span pos) e #:is-error #t))])
                          (define expanded (expand stx))
                          (syntax-case expanded (module)
                            [(module name lang (mb . body))
@@ -177,7 +169,9 @@
                      (define-values (end-line end-col) (get-syntax-end stx))
                      (define start-line (or (syntax-line stx) 1))
                      (define start-col (or (syntax-column stx) 0))
-                     (define range (hash-set (make-range start-line start-col end-line end-col) 'type "range"))
+                     (define span (or (syntax-span stx) 0))
+                     (define pos (or (syntax-position stx) 1))
+                     (define range (hash-set (make-range start-line start-col end-line end-col span pos) 'type "range"))
                      (displayln (jsexpr->string range) real-stdout))))
 
 (define (evaluate-string-content content uri)

@@ -32,14 +32,19 @@ pub fn results_to_hints(results: &[EvalResult], line_index: Option<&LineIndex>, 
             };
  
             // Convert Racket's code-point column to LSP's UTF-16 column at the END of the expression.
-            let lsp_end_line = if res.end_line > 0 { res.end_line.saturating_sub(1) } else { res.line.saturating_sub(1) };
-            let utf16_col = match (line_index, doc_text) {
-                (Some(idx), Some(text)) => idx.code_point_to_utf16(text, lsp_end_line as usize, res.end_col as usize),
-                _ => res.end_col,
+            let position = match (line_index, doc_text) {
+                (Some(idx), Some(text)) => {
+                    let range = idx.range_from_span(text, res.line, res.col, res.span);
+                    range.end
+                }
+                _ => {
+                    let lsp_end_line = if res.end_line > 0 { res.end_line.saturating_sub(1) } else { res.line.saturating_sub(1) };
+                    Position::new(lsp_end_line, res.end_col)
+                }
             };
  
             InlayHint {
-                position: Position::new(lsp_end_line, utf16_col),
+                position,
                 label: InlayHintLabel::String(label),
                 kind: Some(InlayHintKind::PARAMETER),
                 text_edits: None,
@@ -65,6 +70,8 @@ mod tests {
                 col: 5,
                 end_line: 1,
                 end_col: 6,
+                span: 1,
+                pos: 6,
                 result: "10".to_string(),
                 is_error: false,
                 output: "10\n".to_string(), // Output same as result (trimmed)
@@ -86,6 +93,8 @@ mod tests {
                 col: 5,
                 end_line: 1,
                 end_col: 6,
+                span: 1,
+                pos: 6,
                 result: "other".to_string(),
                 is_error: false,
                 output: "hello".to_string(), // Output different from result
@@ -107,6 +116,8 @@ mod tests {
                 col: 5,
                 end_line: 1,
                 end_col: 6,
+                span: 1,
+                pos: 6,
                 result: "'void".to_string(),
                 is_error: false,
                 output: "hello world\nline 2".to_string(),

@@ -152,21 +152,20 @@ fn eval_worker(
                                 .iter()
                                 .filter(|r| r.is_error)
                                         .map(|res| {
-                                            let lsp_start_line = res.line.saturating_sub(1);
-                                            let lsp_end_line = if res.end_line > 0 { res.end_line.saturating_sub(1) } else { lsp_start_line };
-                                            
-                                            let (start_col, end_col) = match doc {
-                                                Some(d) => (
-                                                    d.line_index.code_point_to_utf16(&d.text, lsp_start_line as usize, res.col as usize),
-                                                    d.line_index.code_point_to_utf16(&d.text, lsp_end_line as usize, res.end_col as usize),
-                                                ),
-                                                None => (res.col, res.end_col),
+                                            let range = match doc {
+                                                Some(d) => d.line_index.range_from_span(&d.text, res.line, res.col, res.span),
+                                                None => {
+                                                    // Fallback if doc is not in store
+                                                    let lsp_start_line = res.line.saturating_sub(1);
+                                                    let lsp_end_line = if res.end_line > 0 { res.end_line.saturating_sub(1) } else { lsp_start_line };
+                                                    Range::new(
+                                                        Position::new(lsp_start_line, res.col),
+                                                        Position::new(lsp_end_line, res.end_col),
+                                                    )
+                                                }
                                             };
                                             Diagnostic {
-                                                range: Range::new(
-                                                    Position::new(lsp_start_line, start_col),
-                                                    Position::new(lsp_end_line, end_col),
-                                                ),
+                                                range,
                                                 severity: Some(DiagnosticSeverity::ERROR),
                                                 message: res.result.clone(),
                                                 ..Default::default()
@@ -241,14 +240,7 @@ fn eval_worker(
                         
                         let lsp_ranges: Vec<Range> = if let Some(doc) = lock.document_store.get(&uri_str) {
                              results.iter().map(|r| {
-                                let start_line = r.line.saturating_sub(1);
-                                let end_line = r.end_line.saturating_sub(1);
-                                let start_col = doc.line_index.code_point_to_utf16(&doc.text, start_line as usize, r.col as usize);
-                                let end_col = doc.line_index.code_point_to_utf16(&doc.text, end_line as usize, r.end_col as usize);
-                                Range::new(
-                                    Position::new(start_line, start_col),
-                                    Position::new(end_line, end_col),
-                                )
+                                doc.line_index.range_from_span(&doc.text, r.line, r.col, r.span)
                             }).collect()
                         } else {
                             results.iter().map(|r| {
