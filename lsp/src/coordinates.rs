@@ -87,6 +87,46 @@ impl LineIndex {
         self.byte_offset(text, pos.line as usize, pos.character as usize, OffsetUnit::Utf16)
     }
 
+    /// Convert a Racket code-point position (1-indexed line, 0-indexed column) and span
+    /// into an LSP `Range` (0-indexed line/column, UTF-16).
+    pub fn range_from_span(&self, text: &str, line: u32, col: u32, span: u32) -> lsp_types::Range {
+        let start_line = line.saturating_sub(1) as usize;
+        let start_col = col as usize;
+        
+        let start_offset = self.byte_offset(text, start_line, start_col, OffsetUnit::CodePoint);
+        
+        // Find end offset by walking `span` code points
+        let mut end_offset = start_offset;
+        let mut chars = text[start_offset..].chars();
+        for _ in 0..span {
+            if let Some(c) = chars.next() {
+                end_offset += c.len_utf8();
+            } else {
+                break;
+            }
+        }
+        
+        let start_pos = self.offset_to_position(text, start_offset);
+        let end_pos = self.offset_to_position(text, end_offset);
+        
+        lsp_types::Range::new(start_pos, end_pos)
+    }
+
+    /// Convert a byte offset into an LSP `Position`.
+    pub fn offset_to_position(&self, text: &str, offset: usize) -> lsp_types::Position {
+        // Find the line containing the offset
+        let line = match self.line_offsets.binary_search(&offset) {
+            Ok(l) => l,
+            Err(l) => l.saturating_sub(1),
+        };
+        
+        let line_start = self.line_offsets[line];
+        let col_text = &text[line_start..offset];
+        let utf16_col: usize = col_text.chars().map(|c| c.len_utf16()).sum();
+        
+        lsp_types::Position::new(line as u32, utf16_col as u32)
+    }
+
     fn line_start(&self, line: usize) -> usize {
         self.line_offsets.get(line).copied().unwrap_or_else(|| {
             // Beyond last line — return end of text
@@ -169,6 +209,34 @@ mod tests {
         let idx = LineIndex::new(text);
         let pos = Position::new(1, 7); // end of "(+ x 2)"
         assert_eq!(idx.lsp_position_to_byte(text, pos), 20);
+    }
+
+    #[test]
+    fn test_multiline_span() {
+        // "你好" is 2 code points, each 1 UTF-16 unit
+        // 🦀 is 1 code point, 2 UTF-16 units
+        let text = "(define x\n  \"你好🦀\")\n";
+        let idx = LineIndex::new(text);
+        
+        let start_line = 2; // 1-indexed for Racket
+        let start_col = 2; // 0-indexed code points
+        let span = 5; // code points: ", 你, 好, 🦀, "
+        
+        let range = idx.range_from_span(text, start_line, start_col, span);
+        
+        // LSP is 0-indexed.
+        // Line 1 (0-indexed)
+        assert_eq!(range.start.line, 1);
+        assert_eq!(range.start.character, 2); // 2 spaces before "
+        
+        assert_eq!(range.end.line, 1);
+        // " = 1, 你 = 1, 好 = 1, 🦀 = 2, " = 1 -> Total UTF-16 width = 6
+        // character should be 2 (start) + 6 = 8
+        assert_eq!(range.end.character, 8);
+        
+        let start_idx = idx.lsp_position_to_byte(text, range.start);
+        let end_idx = idx.lsp_position_to_byte(text, range.end);
+        assert_eq!(&text[start_idx..end_idx], "\"你好🦀\"");
     }
 
     #[test]

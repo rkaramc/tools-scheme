@@ -18,6 +18,10 @@ pub struct EvalResult {
     pub end_line: u32,
     #[serde(default)]
     pub end_col: u32,
+    #[serde(default)]
+    pub span: u32,
+    #[serde(default)]
+    pub pos: u32,
     pub result: String,
     pub is_error: bool,
     #[serde(default)]
@@ -30,6 +34,10 @@ pub struct RangeResult {
     pub col: u32,
     pub end_line: u32,
     pub end_col: u32,
+    #[serde(default)]
+    pub span: u32,
+    #[serde(default)]
+    pub pos: u32,
 }
 
 struct ProcessState {
