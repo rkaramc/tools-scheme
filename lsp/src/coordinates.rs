@@ -98,10 +98,17 @@ impl LineIndex {
         
         // Find end offset by walking `span` code points
         let mut end_offset = start_offset;
-        let mut chars = text[start_offset..].chars();
+        let mut chars = text[start_offset..].chars().peekable();
         for _ in 0..span {
             if let Some(c) = chars.next() {
                 end_offset += c.len_utf8();
+                // If we encounter \r\n, consume the \n part as well but don't count it towards the span budget.
+                // This matches Racket's behavior where CRLF counts as a single position increment.
+                if c == '\r' && chars.peek() == Some(&'\n') {
+                    if let Some(next_c) = chars.next() {
+                        end_offset += next_c.len_utf8();
+                    }
+                }
             } else {
                 break;
             }
@@ -259,5 +266,30 @@ mod tests {
         assert_eq!(idx.byte_offset(text, 0, 2, OffsetUnit::Utf16), 6);
         // Code point col 2 → byte 6 (same, since CJK is 1 code unit per code point)
         assert_eq!(idx.byte_offset(text, 0, 2, OffsetUnit::CodePoint), 6);
+    }
+
+    #[test]
+    fn test_crlf_drift_stress() {
+        // Racket normalizes CRLF to LF. 
+        // Original: (a\r\n b) (bytes 0..7)
+        // Normalized: (a\n b) (chars: index 0..5, span 6)
+        // Let's say we have:
+        // Line 1: "(a\r\n"
+        // Line 2: " b)"
+        let text = "(a\r\n b)";
+        let idx = LineIndex::new(text);
+        
+        // Racket normalized text is "(a\n b)"
+        // Span of "(a\n b)" is 6 characters.
+        // Start: Line 1, Col 0.
+        let span = 6; 
+        let range = idx.range_from_span(text, 1, 0, span);
+        
+        // Final position should be AFTER ')'
+        // In original "(a\r\n b)", ')' is at byte 6. Offset AFTER ')' is 7.
+        let end_idx = idx.lsp_position_to_byte(text, range.end);
+        
+        // With the fix, CRLF is treated as 1 unit, so span 6 reaches offset 7.
+        assert_eq!(end_idx, 7, "Drift detected: end_idx is {}, expected 7", end_idx);
     }
 }
