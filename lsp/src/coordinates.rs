@@ -89,6 +89,7 @@ impl LineIndex {
 
     /// Convert a Racket code-point position (1-indexed line, 0-indexed column) and span
     /// into an LSP `Range` (0-indexed line/column, UTF-16).
+    #[allow(unused)]
     pub fn range_from_span(&self, text: &str, line: u32, col: u32, span: u32) -> lsp_types::Range {
         let start_line = line.saturating_sub(1) as usize;
         let start_col = col as usize;

@@ -51,7 +51,7 @@ pub struct Evaluator {
     shim_file: tempfile::NamedTempFile,
     timeout: Duration,
     global_session: std::fs::File,
-    global_session_path: PathBuf,
+    _global_session_path: PathBuf,
     racket_path: String,
 }
 
@@ -98,19 +98,22 @@ impl Evaluator {
             shim_file: shim_file,
             timeout,
             global_session,
-            global_session_path,
+            _global_session_path:global_session_path,
             racket_path: final_racket_path,
         })
     }
 
+    #[allow(unused)]
     pub fn racket_path(&self) -> &str {
         &self.racket_path
     }
 
+    #[allow(unused)]
     pub fn session_path(&self) -> &Path {
-        &self.global_session_path
+        &self._global_session_path
     }
 
+    #[allow(unused)]
     pub fn restart(&mut self) -> Result<()> {
         if let Some(mut state) = self.state.take() {
             let _ = state.child.kill();
