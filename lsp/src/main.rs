@@ -81,7 +81,12 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         .map(|s| s.to_string());
 
     let evaluator = Evaluator::new(racket_path)
-        .map_err(|e| format!("Failed to initialize evaluator: {}", e))?;
+        .map_err(|e| {
+            eprintln!("LSP Initialization Error: {}", e);
+            format!("Failed to initialize evaluator: {}", e)
+        })?;
+
+    eprintln!("LSP Initialization: Racket Evaluator started successfully using binary at {}", evaluator.racket_path());
 
     let state = Arc::new(RwLock::new(SharedState {
         results: HashMap::new(),

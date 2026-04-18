@@ -2,14 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::process::{Command, Stdio, Child, ChildStdin};
 use std::io::{BufRead, BufReader, Write};
 use anyhow::{Result, anyhow};
-use std::path::PathBuf;
+use std::path::{PathBuf, Path};
 use std::fs::File;
 use std::time::Duration;
 use crossbeam_channel::Receiver;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 const SHIM_SOURCE: &str = include_str!("eval-shim.rkt");
-static SHIM_COUNTER: AtomicUsize = AtomicUsize::new(0);
 const TEMP_SUBDIR: &str = "vscode-scheme-toolbox-lsp";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,8 +40,7 @@ struct ProcessState {
 
 pub struct Evaluator {
     state: Option<ProcessState>,
-    shim_path: PathBuf,
-    _shim_lock: Option<std::fs::File>,
+    _shim_file: tempfile::NamedTempFile,
     timeout: Duration,
     global_session: std::fs::File,
     racket_path: String,
@@ -51,7 +48,7 @@ pub struct Evaluator {
 
 impl Evaluator {
     pub fn new(racket_path: Option<String>) -> Result<Self> {
-        let global_session = std::fs::OpenOptions::new()
+        let mut global_session = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open("global.session")?;
@@ -66,37 +63,85 @@ impl Evaluator {
             .or_else(|| std::env::var("TOOLS_SCHEME_RACKET_PATH").ok())
             .unwrap_or_else(|| "racket".to_string());
 
-        // Prepare the embedded shim in a temporary location (consolidated folder)
-        let counter = SHIM_COUNTER.fetch_add(1, Ordering::SeqCst);
+        // Validate racket path
+        Self::validate_racket_path(&final_racket_path, &mut global_session)?;
+
+        // Prepare the embedded shim in a secure temporary location
         let temp_dir = std::env::temp_dir().join(TEMP_SUBDIR);
         std::fs::create_dir_all(&temp_dir)?;
-        let shim_path = temp_dir.join(format!("eval-shim-{}-{}.rkt", std::process::id(), counter));
         
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::OpenOptionsExt;
-            options.share_mode(1 | 2); // FILE_SHARE_READ | FILE_SHARE_WRITE (No DELETE)
-        }
+        let mut shim_file = tempfile::Builder::new()
+            .prefix("eval-shim-")
+            .suffix(".rkt")
+            .tempfile_in(&temp_dir)?;
         
-        let mut shim_lock = options.open(&shim_path)?;
-        shim_lock.write_all(SHIM_SOURCE.as_bytes())?;
-        shim_lock.flush()?;
+        shim_file.write_all(SHIM_SOURCE.as_bytes())?;
+        shim_file.flush()?;
 
-        let state = Self::spawn_process(&final_racket_path, &shim_path, &global_session)?;
+        let state = Self::spawn_process(&final_racket_path, shim_file.path(), &global_session)?;
 
         Ok(Self {
             state: Some(state),
-            shim_path,
-            _shim_lock: Some(shim_lock),
+            _shim_file: shim_file,
             timeout,
             global_session,
             racket_path: final_racket_path,
         })
     }
 
-    fn spawn_process(racket_path: &str, shim_path: &PathBuf, session_file: &File) -> Result<ProcessState> {
+    pub fn racket_path(&self) -> &str {
+        &self.racket_path
+    }
+
+    fn validate_racket_path(path: &str, session_file: &mut File) -> Result<()> {
+        writeln!(session_file, "Validating Racket path: {}", path)?;
+        
+        let has_separator = path.contains('/') || path.contains('\\');
+        
+        let output = if !has_separator {
+            // Assume it's a binary in the PATH
+            Command::new(path).arg("--version").output()
+        } else {
+            let p = Path::new(path);
+            if !p.exists() {
+                return Err(anyhow!("Racket path does not exist: {}", path));
+            }
+            if !p.is_file() {
+                return Err(anyhow!("Racket path is not a file: {}", path));
+            }
+            Command::new(path).arg("--version").output()
+        };
+
+        match output {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                
+                writeln!(session_file, "Racket --version status: {}", out.status)?;
+                writeln!(session_file, "Racket --version stdout: {}", stdout.trim())?;
+                if !stderr.is_empty() {
+                    writeln!(session_file, "Racket --version stderr: {}", stderr.trim())?;
+                }
+
+                if !out.status.success() {
+                    return Err(anyhow!("Racket binary at {} failed with exit code {}. Stderr: {}", path, out.status, stderr.trim()));
+                }
+
+                if !stdout.contains("Racket") && !stderr.contains("Racket") {
+                    return Err(anyhow!("Binary at {} does not appear to be Racket. Output: {}", path, stdout.trim()));
+                }
+
+                writeln!(session_file, "Racket path validation successful.")?;
+                Ok(())
+            }
+            Err(e) => {
+                writeln!(session_file, "Failed to execute Racket binary: {}", e)?;
+                Err(anyhow!("Failed to execute Racket binary at {}: {}", path, e))
+            }
+        }
+    }
+
+    fn spawn_process(racket_path: &str, shim_path: &Path, session_file: &File) -> Result<ProcessState> {
         let mut child = Command::new(racket_path)
             .arg(shim_path)
             .arg("--repl")
@@ -149,7 +194,7 @@ impl Evaluator {
                 let _ = old_state.child.kill();
                 let _ = old_state.child.wait();
             }
-            self.state = Some(Self::spawn_process(&self.racket_path, &self.shim_path, &self.global_session)?);
+            self.state = Some(Self::spawn_process(&self.racket_path, self._shim_file.path(), &self.global_session)?);
         }
         
         Ok(self.state.as_mut().unwrap())
@@ -344,9 +389,6 @@ impl Drop for Evaluator {
             let _ = state.child.kill();
             let _ = state.child.wait();
         }
-        // Release the lock before attempting to delete the file
-        drop(self._shim_lock.take());
-        let _ = std::fs::remove_file(&self.shim_path);
     }
 }
 
@@ -520,13 +562,34 @@ mod tests {
     }
 
     #[test]
+    fn test_not_racket_binary() {
+        // Use a common system binary that is NOT racket
+        let binary = if cfg!(windows) { "ping.exe" } else { "ls" };
+        let res = Evaluator::new(Some(binary.to_string()));
+        match res {
+            Ok(_) => panic!("Evaluator should have failed with non-racket binary"),
+            Err(e) => {
+                let err = e.to_string();
+                println!("ACTUAL ERROR: {}", err);
+                assert!(err.contains("does not appear to be Racket") || 
+                        err.contains("failed with exit code") ||
+                        err.contains("Failed to execute Racket binary"));
+            }
+        }
+    }
+
+    #[test]
+    fn test_invalid_racket_path() {
+        // This should fail with our new validation
+        let res = Evaluator::new(Some("non-existent-racket-binary-XYZ".to_string()));
+        assert!(res.is_err(), "Evaluator should fail with invalid racket path");
+    }
+
+    #[test]
     fn test_racket_path_resolution() {
         // 1. Default (uses "racket")
         let ev_default = Evaluator::new(None).unwrap();
         assert_eq!(ev_default.racket_path, "racket");
-
-        // 2. Env var override logic (tested indirectly by the code structure)
-        // We'll trust the unit logic here as spawning non-existent binaries would fail new().
     }
 
     #[test]

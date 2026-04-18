@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import {
     LanguageClient,
     LanguageClientOptions,
@@ -123,7 +124,8 @@ function getRuntimeBinaryPath(context: vscode.ExtensionContext, originalPath: st
     }
 
     try {
-        const tempName = `scheme-toolbox-lsp-${Date.now()}.exe`;
+        const randomSuffix = crypto.randomBytes(8).toString('hex');
+        const tempName = `scheme-toolbox-lsp-${randomSuffix}.exe`;
         const newTempPath = path.join(getTempDir(), tempName);
         fs.copyFileSync(originalPath, newTempPath);
 
