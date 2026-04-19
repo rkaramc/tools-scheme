@@ -48,7 +48,8 @@ impl LineIndex {
         let line_text = &text[line_start..];
 
         let mut col_remaining = col;
-        for (byte_idx, c) in line_text.char_indices() {
+        let mut chars = line_text.char_indices().peekable();
+        while let Some((byte_idx, c)) = chars.next() {
             if c == '\n' || c == '\r' {
                 return line_start + byte_idx;
             }
@@ -57,7 +58,13 @@ impl LineIndex {
             }
             let unit_width = match unit {
                 OffsetUnit::Utf16 => c.len_utf16(),
-                OffsetUnit::CodePoint => 1,
+                OffsetUnit::CodePoint => {
+                    // Treat CRLF as a single code point for Racket compatibility
+                    if c == '\r' && chars.peek().map(|&(_, next_c)| next_c) == Some('\n') {
+                        let _ = chars.next(); // Consume the '\n'
+                    }
+                    1
+                }
             };
             col_remaining = col_remaining.saturating_sub(unit_width);
         }
@@ -85,6 +92,22 @@ impl LineIndex {
     #[allow(unused)]
     pub fn lsp_position_to_byte(&self, text: &str, pos: Position) -> usize {
         self.byte_offset(text, pos.line as usize, pos.character as usize, OffsetUnit::Utf16)
+    }
+
+    /// Convert an absolute byte offset back into a human-readable LSP `Position`.
+    pub fn offset_to_position(&self, text: &str, offset: usize) -> Position {
+        let line = match self.line_offsets.binary_search(&offset) {
+            Ok(line) => line,
+            Err(line) => line.saturating_sub(1),
+        };
+        
+        let line_start = self.line_offsets[line];
+        let col_text = &text[line_start..offset.min(text.len())];
+        
+        // Calculate UTF-16 character count for the column
+        let character = col_text.chars().map(|c| c.len_utf16()).sum::<usize>() as u32;
+        
+        Position::new(line as u32, character)
     }
 
     /// Convert a Racket code-point position (1-indexed line, 0-indexed column) and span
@@ -120,20 +143,6 @@ impl LineIndex {
         lsp_types::Range::new(start_pos, end_pos)
     }
 
-    /// Convert a byte offset into an LSP `Position`.
-    pub fn offset_to_position(&self, text: &str, offset: usize) -> lsp_types::Position {
-        // Find the line containing the offset
-        let line = match self.line_offsets.binary_search(&offset) {
-            Ok(l) => l,
-            Err(l) => l.saturating_sub(1),
-        };
-        
-        let line_start = self.line_offsets[line];
-        let col_text = &text[line_start..offset];
-        let utf16_col: usize = col_text.chars().map(|c| c.len_utf16()).sum();
-        
-        lsp_types::Position::new(line as u32, utf16_col as u32)
-    }
 
     fn line_start(&self, line: usize) -> usize {
         self.line_offsets.get(line).copied().unwrap_or_else(|| {

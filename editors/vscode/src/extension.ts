@@ -340,7 +340,7 @@ function startClient(context: vscode.ExtensionContext) {
             provideInlayHints: async (document, range, token, next) => {
                 outputChannel.appendLine(`[InlayHints] Requesting hints for ${document.uri.toString()} over range: ${JSON.stringify(range)}`);
                 const result = await next(document, range, token);
-                outputChannel.appendLine(`[InlayHints] Received hints.`);
+                outputChannel.appendLine(`[InlayHints] Received ${result?.length} hints.`);
                 // outputChannel.appendLine(`[InlayHints] Received hints: ${JSON.stringify(result, null, 2)}`);
                 return result;
             }

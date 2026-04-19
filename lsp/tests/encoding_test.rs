@@ -1,6 +1,7 @@
 mod common;
 use common::LspProcess;
 use serde_json::Value;
+use std::time::Duration;
 
 #[test]
 fn test_emoji_utf16_positioning() {
@@ -22,7 +23,11 @@ fn test_emoji_utf16_positioning() {
     // Look for diagnostics
     let mut found_diag = false;
     for _ in 0..10 {
-        let body = lsp.read_message();
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break, // Timeout reached
+        };
+        println!("test_emoji_utf16_positioning received: {}", body);
         if body.contains("textDocument/publishDiagnostics") && body.contains("emoji.rkt") {
             let json: Value = serde_json::from_str(&body).unwrap();
             let diags = json["params"]["diagnostics"].as_array().unwrap();
@@ -30,6 +35,7 @@ fn test_emoji_utf16_positioning() {
             // We expect at least one diagnostic for the syntax error
             for diag in diags {
                 let msg = diag["message"].as_str().unwrap();
+                println!("DIAG: {:?}", diag);
                 if msg.contains("syntax-error-here") || msg.contains("unbound identifier") {
                     found_diag = true;
                     // Check if the range is sane (e.g. starts at line 1)
@@ -64,7 +70,11 @@ fn test_multiline_range_coordinates() {
     // 1. Wait for evaluation to finish (signaled by inlayHint/refresh)
     let mut found_refresh = false;
     for _ in 0..20 {
-        let body = lsp.read_message();
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break, // Timeout reached
+        };
+        println!("test_multiline_range_coordinates received: {}", body);
         if body.contains("workspace/inlayHint/refresh") {
             found_refresh = true;
             break;
@@ -78,7 +88,11 @@ fn test_multiline_range_coordinates() {
 
     let mut found_hint = false;
     for _ in 0..10 {
-        let body = lsp.read_message();
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break, // Timeout reached
+        };
+        println!("test_multiline_range_coordinates received hint response: {}", body);
         if body.contains("\"id\":3") {
             let json: Value = serde_json::from_str(&body).unwrap();
             let hints = json["result"].as_array().expect("result should be an array of InlayHint");

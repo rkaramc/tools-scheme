@@ -1,5 +1,6 @@
 mod common;
 use common::LspProcess;
+use std::time::Duration;
 
 #[test]
 fn test_lsp_eval_integration() {
@@ -18,7 +19,10 @@ fn test_lsp_eval_integration() {
     let mut found_ack = false;
     let mut found_diag = false;
     for _ in 0..15 {
-        let body = lsp.read_message();
+        let body = match lsp.read_message_timeout(Duration::from_secs(10)) {
+            Some(b) => b,
+            None => break,
+        };
         if body.contains("\"id\":2") {
             assert!(body.contains("\"result\":null"), "Expected null ack, got: {}", body);
             found_ack = true;
@@ -44,7 +48,10 @@ fn test_lsp_eval_integration() {
     let mut found_lang_ack = false;
     let mut found_lang_diag = false;
     for _ in 0..15 {
-        let body = lsp.read_message();
+        let body = match lsp.read_message_timeout(Duration::from_secs(10)) {
+            Some(b) => b,
+            None => break,
+        };
         if body.contains("\"id\":3") {
             assert!(body.contains("\"result\":null"), "Expected null ack, got: {}", body);
             found_lang_ack = true;
@@ -74,7 +81,10 @@ fn test_clear_namespace_removes_hints() {
     // Wait for evaluation
     let mut found_diag = false;
     for _ in 0..15 {
-        let body = lsp.read_message();
+        let body = match lsp.read_message_timeout(Duration::from_secs(10)) {
+            Some(b) => b,
+            None => break,
+        };
         if body.contains("textDocument/publishDiagnostics") {
             found_diag = true;
             break;
@@ -88,7 +98,11 @@ fn test_clear_namespace_removes_hints() {
     
     let mut found_hints = false;
     for _ in 0..15 {
-        let body = lsp.read_message();
+        let body = match lsp.read_message_timeout(Duration::from_secs(10)) {
+            Some(b) => b,
+            None => break,
+        };
+        println!("MSG id:11 loop: {}", body);
         if body.contains("\"id\":11") {
             assert!(body.contains("\"result\":["), "Expected non-empty result for hints, got: {}", body);
             found_hints = true;
@@ -104,7 +118,11 @@ fn test_clear_namespace_removes_hints() {
     let mut found_clear_ack = false;
     let mut found_refresh = false;
     for _ in 0..15 {
-        let body = lsp.read_message();
+        let body = match lsp.read_message_timeout(Duration::from_secs(10)) {
+            Some(b) => b,
+            None => break,
+        };
+        println!("MSG id:12 loop: {}", body);
         if body.contains("\"id\":12") {
             found_clear_ack = true;
         }
@@ -124,7 +142,11 @@ fn test_clear_namespace_removes_hints() {
     
     let mut found_empty_hints = false;
     for _ in 0..15 {
-        let body = lsp.read_message();
+        let body = match lsp.read_message_timeout(Duration::from_secs(10)) {
+            Some(b) => b,
+            None => break,
+        };
+        println!("MSG id:13 loop: {}", body);
         if body.contains("\"id\":13") {
             assert!(body.contains("\"result\":[]"), "Expected empty hints after clear, got: {}", body);
             found_empty_hints = true;
@@ -150,7 +172,10 @@ fn test_evaluate_selection_offset() {
     // Wait for evaluation
     let mut found_diag = false;
     for _ in 0..15 {
-        let body = lsp.read_message();
+        let body = match lsp.read_message_timeout(Duration::from_secs(10)) {
+            Some(b) => b,
+            None => break,
+        };
         if body.contains("textDocument/publishDiagnostics") {
             found_diag = true;
             break;
@@ -164,7 +189,11 @@ fn test_evaluate_selection_offset() {
     
     let mut found_hints = false;
     for _ in 0..15 {
-        let body = lsp.read_message();
+        let body = match lsp.read_message_timeout(Duration::from_secs(10)) {
+            Some(b) => b,
+            None => break,
+        };
+        println!("MSG: {}", body);
         if body.contains("\"id\":21") {
             // The position should be on line 2, character 7
             assert!(body.contains("\"line\":2"), "Expected hint on line 2, got: {}", body);
@@ -188,7 +217,10 @@ fn test_lang_file_code_lenses() {
     // Wait for the background parse task to finish
     let mut found_refresh = false;
     for _ in 0..15 {
-        let body = lsp.read_message();
+        let body = match lsp.read_message_timeout(Duration::from_secs(10)) {
+            Some(b) => b,
+            None => break,
+        };
         if body.contains("workspace/codeLens/refresh") {
             found_refresh = true;
             break;
@@ -202,7 +234,10 @@ fn test_lang_file_code_lenses() {
 
     let mut found_lenses = false;
     for _ in 0..15 {
-        let body = lsp.read_message();
+        let body = match lsp.read_message_timeout(Duration::from_secs(10)) {
+            Some(b) => b,
+            None => break,
+        };
         if body.contains("\"id\":30") {
             // We should get 2 code lenses because there are 2 forms (+ 1 2) and (+ 3 4)
             // (The #lang racket line itself is part of the module declaration)
@@ -220,7 +255,10 @@ fn test_lang_file_code_lenses() {
 
     let mut found_diag = false;
     for _ in 0..15 {
-        let body = lsp.read_message();
+        let body = match lsp.read_message_timeout(Duration::from_secs(10)) {
+            Some(b) => b,
+            None => break,
+        };
         if body.contains("textDocument/publishDiagnostics") {
             assert!(!body.contains("racket: undefined"), "Received 'racket: undefined' error!");
             assert!(!body.contains("\"is_error\":true"), "Received evaluation error: {}", body);

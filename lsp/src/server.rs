@@ -17,8 +17,9 @@ use std::sync::{Arc, RwLock};
 use crate::documents::DocumentStore;
 use crate::evaluator::{EvalResult, Evaluator};
 use crate::inlay_hints;
+use crate::coordinates::LineIndex;
 
-/// State shared between the main loop and the eval worker thread.
+/// State shared between the main loop and the eval worker thread. 
 pub struct SharedState {
     pub results: HashMap<String, Vec<EvalResult>>,
     pub ranges: HashMap<String, Vec<Range>>,
@@ -52,7 +53,7 @@ pub fn eval_worker(
 ) {
     for task in rx {
         match task.action {
-            EvalAction::Evaluate { content, version, offset, byte_range, .. } => {
+            EvalAction::Evaluate { content, version, offset, byte_range, request_id } => {
                 let uri_str = task.uri.clone();
                 let uri = match lsp_types::Uri::from_str(&uri_str) {
                     Ok(u) => u,
@@ -67,26 +68,45 @@ pub fn eval_worker(
                     .and_then(|d| d.session_file.as_ref())
                     .and_then(|f| f.try_clone().ok());
 
+                evaluator.log(&format!("EvalAction::Evaluate(content, version: {:?}, offset: {:?}, byte_range: {:?}, request_id: {:?})", version, offset, byte_range, request_id));
+
                 let eval_results = evaluator.evaluate_str(&content, Some(&uri_str), context_label.as_deref(), log_handle.as_ref());
 
                 match eval_results {
                     Ok(mut results) => {
-                        // Adjust coordinates based on selection offset
-                        if let Some((line_off, char_off)) = offset {
+                        // Convert Racket's character offsets to byte offsets relative to the evaluated content.
+                        for res in &mut results {
+                            let char_idx = res.pos.saturating_sub(1) as usize;
+                            let mut byte_off = 0;
+                            let mut chars = content.chars().peekable();
+                            for _ in 0..char_idx {
+                                if let Some(c) = chars.next() {
+                                    byte_off += c.len_utf8();
+                                    if c == '\r' && chars.peek() == Some(&'\n') {
+                                        if let Some(next_c) = chars.next() {
+                                            byte_off += next_c.len_utf8();
+                                        }
+                                    }
+                                } else { break; }
+                            }
+                            res.pos = (byte_off + 1) as u32;
+                        }
+
+                        // Adjust byte pos based on selection offset
+                        let is_selection = offset.is_some();
+                        if is_selection {
                             let start_byte_off = byte_range.map(|(s, _)| s).unwrap_or(0);
                             for res in &mut results {
-                                if res.line == 1 {
-                                    res.col += char_off;
-                                }
-                                if res.end_line == 1 || (res.end_line == 0 && res.line == 1) {
-                                    res.end_col += char_off;
-                                }
-                                res.line += line_off;
-                                if res.end_line > 0 {
-                                    res.end_line += line_off;
-                                }
-                                // Adjust byte position
-                                res.pos += start_byte_off;
+                                res.pos += start_byte_off as u32;
+                            }
+                        }
+
+                        // Normalize coordinates to UTF-16 immediately using syntax-position and span.
+                        if let Some(doc) = state.read().unwrap().document_store.get(&uri_str) {
+                            if is_selection {
+                                recalculate_from_byte_pos(&mut results, &doc.text, &doc.line_index);
+                            } else {
+                                normalize_results(&mut results, &doc.text, &doc.line_index);
                             }
                         }
 
@@ -94,23 +114,15 @@ pub fn eval_worker(
                         // before acquiring the write lock.
                         let diagnostics: Vec<Diagnostic> = {
                             let state_read = state.read().unwrap_or_else(|e| e.into_inner());
-                            let doc = state_read.document_store.get(&uri_str);
+                            let _doc = state_read.document_store.get(&uri_str);
                             results
                                 .iter()
                                 .filter(|r| r.is_error)
                                         .map(|res| {
-                                            let range = match doc {
-                                                Some(d) => d.line_index.range_from_span(&d.text, res.line, res.col, res.span),
-                                                None => {
-                                                    // Fallback if doc is not in store
-                                                    let lsp_start_line = res.line.saturating_sub(1);
-                                                    let lsp_end_line = if res.end_line > 0 { res.end_line.saturating_sub(1) } else { lsp_start_line };
-                                                    Range::new(
-                                                        Position::new(lsp_start_line, res.col),
-                                                        Position::new(lsp_end_line, res.end_col),
-                                                    )
-                                                }
-                                            };
+                                            let range = Range::new(
+                                                Position::new(res.line.saturating_sub(1), res.col),
+                                                Position::new(res.end_line.saturating_sub(1), res.end_col),
+                                            );
                                             Diagnostic {
                                                 range,
                                                 severity: Some(DiagnosticSeverity::ERROR),
@@ -120,6 +132,7 @@ pub fn eval_worker(
                                         })
                                 .collect()
                         };
+
 
                         // Store results with spatial merging.
                         {
@@ -169,6 +182,7 @@ pub fn eval_worker(
                 }
             }
             EvalAction::Parse { version } => {
+                evaluator.log(&format!("EvalAction::Parse(version: {:?}) for {}", version, task.uri));
                 let (content, current_version) = {
                     let lock = state.read().unwrap_or_else(|e| e.into_inner());
                     if let Some(doc) = lock.document_store.get(&task.uri) {
@@ -181,14 +195,16 @@ pub fn eval_worker(
                 // Skip if the document was closed or a newer version is already in the store.
                 if let (Some(c), Some(v)) = (content, current_version) {
                     if v > version {
+                        evaluator.log("Skipping parse: newer version already in store");
                         continue;
                     }
 
                     let parse_results = evaluator.parse_str(&c, Some(&task.uri));
                     if let Ok(results) = parse_results {
+                        evaluator.log(&format!("Parsed {} forms", results.len()));
                         let mut lock = state.write().unwrap_or_else(|e| e.into_inner());
                         let uri_str = task.uri.clone();
-                        
+
                         let lsp_ranges: Vec<Range> = if let Some(doc) = lock.document_store.get(&uri_str) {
                              results.iter().map(|r| {
                                 doc.line_index.range_from_span(&doc.text, r.line, r.col, r.span)
@@ -201,9 +217,9 @@ pub fn eval_worker(
                                 )
                             }).collect()
                         };
-                        
+
                         lock.ranges.insert(uri_str, lsp_ranges);
-                        
+
                         // Ask the client to refresh code lenses
                         let refresh_req = Request::new(
                             RequestId::from(998),
@@ -211,13 +227,33 @@ pub fn eval_worker(
                             json!(null),
                         );
                         let _ = sender.send(Message::Request(refresh_req));
+                        evaluator.log("Sent codeLens/refresh");
+                    } else if let Err(e) = parse_results {
+                        evaluator.log(&format!("Parse error: {}", e));
                     }
                 }
             }
             EvalAction::Clear => {
+                evaluator.log(&format!("EvalAction::Clear for {}", task.uri));
                 let _ = evaluator.clear_namespace(&task.uri);
                 let mut lock = state.write().unwrap_or_else(|e| e.into_inner());
                 lock.ranges.remove(&task.uri);
+                lock.results.remove(&task.uri);
+
+                evaluator.log("Namespace cleared, sending refreshes");
+                // Trigger refreshes
+                let refresh_req = Request::new(
+                    RequestId::from(1000),
+                    "workspace/inlayHint/refresh".to_string(),
+                    json!(null),
+                );
+                let _ = sender.send(Message::Request(refresh_req));
+                let lens_refresh = Request::new(
+                    RequestId::from(1001),
+                    "workspace/codeLens/refresh".to_string(),
+                    json!(null),
+                );
+                let _ = sender.send(Message::Request(lens_refresh));
             }
             EvalAction::Restart => {
                 let _ = evaluator.restart();
@@ -406,6 +442,13 @@ impl Server {
                     let character = o.get("character").and_then(|v| v.as_u64()).map(|v| v as u32);
                     if let (Some(l), Some(c)) = (line, character) {
                          offset = Some((l, c));
+                         let state = self.state.read().unwrap_or_else(|e| e.into_inner());
+                         if let Some(doc) = state.document_store.get(&uri_str) {
+                              let start_byte = doc.line_index.lsp_position_to_byte(&doc.text, Position::new(l, c));
+                              // We don't have an end offset for legacy objects, so just use start for both, 
+                              // or just start_byte since only start_byte_off is used for res.pos shifting anyway
+                              byte_range = Some((start_byte as u32, start_byte as u32));
+                         }
                     }
                 }
             }
@@ -456,7 +499,8 @@ impl Server {
             let doc = state.document_store.get(&uri);
             let doc_text = doc.map(|d| d.text.as_str());
             let line_index = doc.map(|d| &d.line_index);
-            inlay_hints::results_to_hints(results, line_index, doc_text)
+            let log_handle = doc.and_then(|d| d.session_file.as_ref());
+            inlay_hints::results_to_hints(results, line_index, doc_text, log_handle)
         } else {
             Vec::new()
         };
@@ -574,7 +618,7 @@ mod tests {
             end_line: 2,
             end_col: 12,
             span: 2,
-            pos: 13,
+            pos: 14,
             result: "2".to_string(),
             is_error: false,
             output: "".to_string(),
@@ -586,7 +630,43 @@ mod tests {
         assert_eq!(results[0].line, 3);
         assert_eq!(results[0].end_line, 3);
         // pos should be shifted by length of ";; Comment\n" (11 bytes)
-        assert_eq!(results[0].pos, 13 + 11);
+        assert_eq!(results[0].pos, 14 + 11);
+    }
+
+    #[test]
+    fn test_shift_results_robust() {
+        use crate::evaluator::EvalResult;
+        
+        // Scenario: AA -> AAA
+        let old_text = "AA";
+        let new_text = "AAA";
+        // Result at end of AA (pos 3, line 1, col 2)
+        let mut results = vec![EvalResult {
+            line: 1, col: 2, end_line: 1, end_col: 2, span: 0,
+            pos: 3, result: "res".to_string(), is_error: false, output: "".to_string()
+        }];
+        
+        super::shift_results(&mut results, old_text, new_text);
+        
+        // Common prefix "AA" (len 2). Pivot 2.
+        // pos_idx = 3-1 = 2. 2 >= 2. Shifted!
+        // New pos = 3 + 1 = 4.
+        assert_eq!(results[0].pos, 4);
+        assert_eq!(results[0].line, 1);
+        assert_eq!(results[0].col, 3);
+        
+        // Scenario: Insertion at start
+        let old_text = "BB";
+        let new_text = "ABB";
+        let mut results = vec![EvalResult {
+            line: 1, col: 1, end_line: 1, end_col: 1, span: 0,
+            pos: 2, result: "res".to_string(), is_error: false, output: "".to_string()
+        }];
+        super::shift_results(&mut results, old_text, new_text);
+        // Prefix 0. Pivot 0. 1 >= 0. Shifted.
+        assert_eq!(results[0].pos, 3);
+        assert_eq!(results[0].line, 1);
+        assert_eq!(results[0].col, 2);
     }
 
     #[test]
@@ -609,12 +689,25 @@ mod tests {
         let new_results = vec![make_res(20, "new2")];
         
         // Merge with range covering old2 [15, 25]
+        // old2 pos=20. 20-1=19. 19 is in [15, 25].
         super::merge_results(&mut existing, new_results, Some((15, 25)));
 
         assert_eq!(existing.len(), 3);
         assert_eq!(existing[0].result, "old1");
         assert_eq!(existing[1].result, "old3");
         assert_eq!(existing[2].result, "new2");
+
+        // Edge case: pos=10. 10-1=9. Range [10, 20]. 
+        // 9 < 10. Should NOT be cleared.
+        let mut existing = vec![make_res(10, "old")];
+        super::merge_results(&mut existing, vec![], Some((10, 20)));
+        assert_eq!(existing.len(), 1, "Boundary case: pos=10 (idx 9) should not be cleared by range [10, 20]");
+
+        // Edge case: pos=11. 11-1=10. Range [10, 20].
+        // 10 >= 10. Should BE cleared.
+        let mut existing = vec![make_res(11, "old")];
+        super::merge_results(&mut existing, vec![], Some((10, 20)));
+        assert_eq!(existing.len(), 0, "Boundary case: pos=11 (idx 10) should be cleared by range [10, 20]");
         
         // Full overwrite
         super::merge_results(&mut existing, vec![make_res(50, "final")], None);
@@ -625,8 +718,12 @@ mod tests {
 
 fn merge_results(existing: &mut Vec<EvalResult>, new_results: Vec<EvalResult>, byte_range: Option<(u32, u32)>) {
     if let Some((start, end)) = byte_range {
-        // Remove results that strictly overlap with the evaluated range.
-        existing.retain(|res| res.pos < start || res.pos >= end);
+        // Partial evaluation. Remove existing results that fall within the new range.
+        // res.pos from Racket is 1-indexed, range (start/end) is 0-indexed.
+        existing.retain(|res| {
+            let zero_indexed_pos = res.pos.saturating_sub(1);
+            zero_indexed_pos < start || zero_indexed_pos >= end
+        });
         // Append new results.
         existing.extend(new_results);
     } else {
@@ -635,33 +732,84 @@ fn merge_results(existing: &mut Vec<EvalResult>, new_results: Vec<EvalResult>, b
     }
 }
 
+fn normalize_results(results: &mut [EvalResult], text: &str, line_index: &LineIndex) {
+    for res in results.iter_mut() {
+        // Convert Racket's 1-indexed line and 0-indexed character col to a byte offset.
+        let start_line_idx = res.line.saturating_sub(1) as usize;
+        let start_col_idx = res.col as usize;
+        
+        // This correctly handles Racket's CRLF codepoint counting.
+        let pos_byte_idx = line_index.byte_offset(text, start_line_idx, start_col_idx, crate::coordinates::OffsetUnit::CodePoint);
+        
+        // Store the byte-based position so merge_results and shift_results can use it.
+        res.pos = (pos_byte_idx + 1) as u32;
+    }
+    recalculate_from_byte_pos(results, text, line_index);
+}
+
+fn recalculate_from_byte_pos(results: &mut [EvalResult], text: &str, line_index: &LineIndex) {
+    for res in results.iter_mut() {
+        let pos_byte_idx = res.pos.saturating_sub(1) as usize;
+        
+        // Calculate end offset by walking `span` (Unicode code points) from pos_byte_idx.
+        let mut end_byte_idx = pos_byte_idx;
+        let mut chars = text[pos_byte_idx.min(text.len())..].chars().peekable();
+        for _ in 0..res.span {
+            if let Some(c) = chars.next() {
+                end_byte_idx += c.len_utf8();
+                // Treat CRLF as a single position increment to match Racket.
+                if c == '\r' && chars.peek() == Some(&'\n') {
+                    if let Some(next_c) = chars.next() {
+                        end_byte_idx += next_c.len_utf8();
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+        
+        // Convert byte offsets back to LSP Positions (UTF-16).
+        let start_pos = line_index.offset_to_position(text, pos_byte_idx);
+        let end_pos = line_index.offset_to_position(text, end_byte_idx);
+        
+        // Update all coordinate fields to standardized UTF-16.
+        res.line = start_pos.line + 1;
+        res.col = start_pos.character;
+        res.end_line = end_pos.line + 1;
+        res.end_col = end_pos.character;
+    }
+}
+
 fn shift_results(results: &mut Vec<EvalResult>, old_text: &str, new_text: &str) {
     if results.is_empty() { return; }
 
-    let old_lines: Vec<&str> = old_text.lines().collect();
-    let new_lines: Vec<&str> = new_text.lines().collect();
-
-    // Find first differing line
-    let first_diff_line = old_lines.iter().zip(new_lines.iter())
-        .position(|(old, new)| old != new)
-        .unwrap_or(old_lines.len().min(new_lines.len()));
-
-    let line_delta = (new_lines.len() as i32) - (old_lines.len() as i32);
     let byte_delta = (new_text.len() as i32) - (old_text.len() as i32);
+    if byte_delta == 0 && old_text == new_text { return; }
 
-    // If no lines were added/removed and length is same, nothing to shift.
-    if line_delta == 0 && byte_delta == 0 { return; }
+    // Find the earliest point of divergence (common prefix)
+    let common_prefix_len = old_text.as_bytes().iter()
+        .zip(new_text.as_bytes().iter())
+        .take_while(|(a, b)| a == b)
+        .count();
 
-    let affected_line = (first_diff_line + 1) as u32;
+    // Pivot: everything occurring strictly after the common prefix is shifted
+    let pivot = common_prefix_len;
+    
+    // We need a fresh LineIndex to re-derive line/col from shifted byte offsets
+    let new_idx = crate::coordinates::LineIndex::new(new_text);
 
     for res in results.iter_mut() {
-        if res.line >= affected_line {
-            res.line = (res.line as i32 + line_delta).max(1) as u32;
-            if res.end_line > 0 {
-                res.end_line = (res.end_line as i32 + line_delta).max(1) as u32;
-            }
+        // Racket's res.pos is 1-indexed. Convert to 0-indexed for comparison.
+        let pos_idx = res.pos.saturating_sub(1) as usize;
+
+        if pos_idx >= pivot {
+            // Apply byte-level shift
             res.pos = (res.pos as i32 + byte_delta).max(1) as u32;
         }
     }
+
+    // Standardize all coordinates to UTF-16 based on the fresh byte positions.
+    recalculate_from_byte_pos(results, new_text, &new_idx);
 }
+
 
