@@ -251,8 +251,8 @@ export function activate(context: vscode.ExtensionContext) {
                     uri,
                     selectedText,
                     {
-                        line: selection.start.line,
-                        character: selection.start.character
+                        start: selection.start,
+                        end: selection.end
                     }
                 ]
             });

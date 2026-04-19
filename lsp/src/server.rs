@@ -26,7 +26,7 @@ pub struct SharedState {
 }
 
 pub enum EvalAction {
-    Evaluate { content: String, request_id: RequestId, version: Option<i32>, offset: Option<(u32, u32)> },
+    Evaluate { content: String, request_id: RequestId, version: Option<i32>, offset: Option<(u32, u32)>, byte_range: Option<(u32, u32)> },
     Parse { version: i32 },
     Clear,
     Restart,
@@ -52,7 +52,7 @@ pub fn eval_worker(
 ) {
     for task in rx {
         match task.action {
-            EvalAction::Evaluate { content, version, offset, .. } => {
+            EvalAction::Evaluate { content, version, offset, byte_range, .. } => {
                 let uri_str = task.uri.clone();
                 let uri = match lsp_types::Uri::from_str(&uri_str) {
                     Ok(u) => u,
@@ -73,6 +73,7 @@ pub fn eval_worker(
                     Ok(mut results) => {
                         // Adjust coordinates based on selection offset
                         if let Some((line_off, char_off)) = offset {
+                            let start_byte_off = byte_range.map(|(s, _)| s).unwrap_or(0);
                             for res in &mut results {
                                 if res.line == 1 {
                                     res.col += char_off;
@@ -84,6 +85,8 @@ pub fn eval_worker(
                                 if res.end_line > 0 {
                                     res.end_line += line_off;
                                 }
+                                // Adjust byte position
+                                res.pos += start_byte_off;
                             }
                         }
 
@@ -118,8 +121,12 @@ pub fn eval_worker(
                                 .collect()
                         };
 
-                        // Store results.
-                        state.write().unwrap_or_else(|e| e.into_inner()).results.insert(uri_str.clone(), results);
+                        // Store results with spatial merging.
+                        {
+                            let mut lock = state.write().unwrap_or_else(|e| e.into_inner());
+                            let existing = lock.results.entry(uri_str.clone()).or_insert_with(Vec::new);
+                            merge_results(existing, results, byte_range);
+                        }
 
                         // Publish diagnostics.
                         let diag_params = PublishDiagnosticsParams {
@@ -281,6 +288,24 @@ impl Server {
         } else if let Some(params) = cast_notification::<DidChangeTextDocument>(&not) {
             let uri = params.text_document.uri.to_string();
             let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
+            
+            // Heuristic shift for results before we update the document text
+            let texts = if let Some(doc) = state.document_store.get(&uri) {
+                if let Some(change) = params.content_changes.first() {
+                    Some((doc.text.clone(), change.text.clone()))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Some((old, new)) = texts {
+                if let Some(results) = state.results.get_mut(&uri) {
+                    shift_results(results, &old, &new);
+                }
+            }
+
             state.document_store.change(
                 &uri,
                 params.text_document.version,
@@ -357,28 +382,41 @@ impl Server {
         let uri = Url::parse(&uri_str)?;
 
         // Snapshot the content and version to evaluate at dispatch time.
-        let (content_snapshot, version_snapshot, offset) = if params.command == "scheme.evaluateSelection" {
+        let (content_snapshot, version_snapshot, offset, byte_range) = if params.command == "scheme.evaluateSelection" {
             let content = params.arguments.get(1)
                 .and_then(|a| a.as_str())
                 .map(|s| s.to_string());
-            let offset = params.arguments.get(2)
-                .and_then(|a| a.as_object())
-                .and_then(|o| {
+            
+            let mut offset = None;
+            let mut byte_range = None;
+
+            if let Some(arg2) = params.arguments.get(2) {
+                if let Ok(range) = serde_json::from_value::<Range>(arg2.clone()) {
+                    // It's a full Range object (LSP)
+                    let state = self.state.read().unwrap_or_else(|e| e.into_inner());
+                    if let Some(doc) = state.document_store.get(&uri_str) {
+                         let start_byte = doc.line_index.lsp_position_to_byte(&doc.text, range.start);
+                         let end_byte = doc.line_index.lsp_position_to_byte(&doc.text, range.end);
+                         offset = Some((range.start.line, range.start.character));
+                         byte_range = Some((start_byte as u32, end_byte as u32));
+                    }
+                } else if let Some(o) = arg2.as_object() {
+                    // Legacy {line, character} object
                     let line = o.get("line").and_then(|v| v.as_u64()).map(|v| v as u32);
                     let character = o.get("character").and_then(|v| v.as_u64()).map(|v| v as u32);
-                    match (line, character) {
-                        (Some(l), Some(c)) => Some((l, c)),
-                        _ => None,
+                    if let (Some(l), Some(c)) = (line, character) {
+                         offset = Some((l, c));
                     }
-                });
-            (content, None, offset)
+                }
+            }
+            (content, None, offset, byte_range)
         } else {
             let state = self.state.read().unwrap_or_else(|e| e.into_inner());
             let doc = state.document_store.get(&uri_str);
             let content = doc.map(|d| d.text.clone())
                 .or_else(|| uri.to_file_path().ok()
                     .and_then(|p| std::fs::read_to_string(p).ok()));
-            (content, doc.map(|d| d.version), None)
+            (content, doc.map(|d| d.version), None, None)
         };
 
         match content_snapshot {
@@ -391,6 +429,7 @@ impl Server {
                         request_id: id.clone(),
                         version: version_snapshot,
                         offset,
+                        byte_range,
                     },
                 });
 
@@ -447,7 +486,7 @@ impl Server {
                 let cmd = Command {
                     title: "▶ Evaluate".to_string(),
                     command: "scheme.evaluateSelection".to_string(),
-                    arguments: Some(vec![json!(uri_str), json!(selected_text)]),
+                    arguments: Some(vec![json!(uri_str), json!(selected_text), json!(*range)]),
                 };
 
                 lenses.push(CodeLens {
@@ -520,4 +559,109 @@ mod tests {
         let read_lock = state.read().unwrap_or_else(|poisoned| poisoned.into_inner());
         assert_eq!(*read_lock, 2);
     }
+
+    #[test]
+    fn test_shift_results() {
+        use crate::evaluator::EvalResult;
+
+        let old_text = "(define x 1)\n(define y 2)\n(define z 3)";
+        let new_text = ";; Comment\n(define x 1)\n(define y 2)\n(define z 3)";
+        
+        // Result is on (define y 2), originally line 2
+        let mut results = vec![EvalResult {
+            line: 2,
+            col: 10,
+            end_line: 2,
+            end_col: 12,
+            span: 2,
+            pos: 13,
+            result: "2".to_string(),
+            is_error: false,
+            output: "".to_string(),
+        }];
+
+        super::shift_results(&mut results, old_text, new_text);
+
+        // Should be shifted to line 3
+        assert_eq!(results[0].line, 3);
+        assert_eq!(results[0].end_line, 3);
+        // pos should be shifted by length of ";; Comment\n" (11 bytes)
+        assert_eq!(results[0].pos, 13 + 11);
+    }
+
+    #[test]
+    fn test_merge_results() {
+        use crate::evaluator::EvalResult;
+
+        fn make_res(pos: u32, val: &str) -> EvalResult {
+            EvalResult {
+                line: 1, col: 0, end_line: 1, end_col: 0, span: 0,
+                pos, result: val.to_string(), is_error: false, output: "".to_string()
+            }
+        }
+
+        let mut existing = vec![
+            make_res(10, "old1"),
+            make_res(20, "old2"),
+            make_res(30, "old3"),
+        ];
+
+        let new_results = vec![make_res(20, "new2")];
+        
+        // Merge with range covering old2 [15, 25]
+        super::merge_results(&mut existing, new_results, Some((15, 25)));
+
+        assert_eq!(existing.len(), 3);
+        assert_eq!(existing[0].result, "old1");
+        assert_eq!(existing[1].result, "old3");
+        assert_eq!(existing[2].result, "new2");
+        
+        // Full overwrite
+        super::merge_results(&mut existing, vec![make_res(50, "final")], None);
+        assert_eq!(existing.len(), 1);
+        assert_eq!(existing[0].result, "final");
+    }
 }
+
+fn merge_results(existing: &mut Vec<EvalResult>, new_results: Vec<EvalResult>, byte_range: Option<(u32, u32)>) {
+    if let Some((start, end)) = byte_range {
+        // Remove results that strictly overlap with the evaluated range.
+        existing.retain(|res| res.pos < start || res.pos >= end);
+        // Append new results.
+        existing.extend(new_results);
+    } else {
+        // Full file evaluation, overwrite everything.
+        *existing = new_results;
+    }
+}
+
+fn shift_results(results: &mut Vec<EvalResult>, old_text: &str, new_text: &str) {
+    if results.is_empty() { return; }
+
+    let old_lines: Vec<&str> = old_text.lines().collect();
+    let new_lines: Vec<&str> = new_text.lines().collect();
+
+    // Find first differing line
+    let first_diff_line = old_lines.iter().zip(new_lines.iter())
+        .position(|(old, new)| old != new)
+        .unwrap_or(old_lines.len().min(new_lines.len()));
+
+    let line_delta = (new_lines.len() as i32) - (old_lines.len() as i32);
+    let byte_delta = (new_text.len() as i32) - (old_text.len() as i32);
+
+    // If no lines were added/removed and length is same, nothing to shift.
+    if line_delta == 0 && byte_delta == 0 { return; }
+
+    let affected_line = (first_diff_line + 1) as u32;
+
+    for res in results.iter_mut() {
+        if res.line >= affected_line {
+            res.line = (res.line as i32 + line_delta).max(1) as u32;
+            if res.end_line > 0 {
+                res.end_line = (res.end_line as i32 + line_delta).max(1) as u32;
+            }
+            res.pos = (res.pos as i32 + byte_delta).max(1) as u32;
+        }
+    }
+}
+
