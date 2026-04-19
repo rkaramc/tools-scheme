@@ -26,7 +26,7 @@ pub struct SharedState {
 }
 
 pub enum EvalAction {
-    Evaluate { content: String, request_id: RequestId, version: Option<i32> },
+    Evaluate { content: String, request_id: RequestId, version: Option<i32>, offset: Option<(u32, u32)> },
     Parse { version: i32 },
     Clear,
     Restart,
@@ -52,7 +52,7 @@ pub fn eval_worker(
 ) {
     for task in rx {
         match task.action {
-            EvalAction::Evaluate { content, version, .. } => {
+            EvalAction::Evaluate { content, version, offset, .. } => {
                 let uri_str = task.uri.clone();
                 let uri = match lsp_types::Uri::from_str(&uri_str) {
                     Ok(u) => u,
@@ -70,7 +70,23 @@ pub fn eval_worker(
                 let eval_results = evaluator.evaluate_str(&content, Some(&uri_str), context_label.as_deref(), log_handle.as_ref());
 
                 match eval_results {
-                    Ok(results) => {
+                    Ok(mut results) => {
+                        // Adjust coordinates based on selection offset
+                        if let Some((line_off, char_off)) = offset {
+                            for res in &mut results {
+                                if res.line == 1 {
+                                    res.col += char_off;
+                                }
+                                if res.end_line == 1 || (res.end_line == 0 && res.line == 1) {
+                                    res.end_col += char_off;
+                                }
+                                res.line += line_off;
+                                if res.end_line > 0 {
+                                    res.end_line += line_off;
+                                }
+                            }
+                        }
+
                         // Build diagnostics while we still have the results in hand,
                         // before acquiring the write lock.
                         let diagnostics: Vec<Diagnostic> = {
@@ -341,18 +357,28 @@ impl Server {
         let uri = Url::parse(&uri_str)?;
 
         // Snapshot the content and version to evaluate at dispatch time.
-        let (content_snapshot, version_snapshot) = if params.command == "scheme.evaluateSelection" {
+        let (content_snapshot, version_snapshot, offset) = if params.command == "scheme.evaluateSelection" {
             let content = params.arguments.get(1)
                 .and_then(|a| a.as_str())
                 .map(|s| s.to_string());
-            (content, None)
+            let offset = params.arguments.get(2)
+                .and_then(|a| a.as_object())
+                .and_then(|o| {
+                    let line = o.get("line").and_then(|v| v.as_u64()).map(|v| v as u32);
+                    let character = o.get("character").and_then(|v| v.as_u64()).map(|v| v as u32);
+                    match (line, character) {
+                        (Some(l), Some(c)) => Some((l, c)),
+                        _ => None,
+                    }
+                });
+            (content, None, offset)
         } else {
             let state = self.state.read().unwrap_or_else(|e| e.into_inner());
             let doc = state.document_store.get(&uri_str);
             let content = doc.map(|d| d.text.clone())
                 .or_else(|| uri.to_file_path().ok()
                     .and_then(|p| std::fs::read_to_string(p).ok()));
-            (content, doc.map(|d| d.version))
+            (content, doc.map(|d| d.version), None)
         };
 
         match content_snapshot {
@@ -364,6 +390,7 @@ impl Server {
                         content,
                         request_id: id.clone(),
                         version: version_snapshot,
+                        offset,
                     },
                 });
 

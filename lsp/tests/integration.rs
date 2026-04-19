@@ -133,3 +133,45 @@ fn test_clear_namespace_removes_hints() {
     }
     assert!(found_empty_hints, "Did not receive empty inlay hints after clear");
 }
+
+#[test]
+fn test_evaluate_selection_offset() {
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize();
+
+    let text = "(+ 1 2)\n(+ 3 4)\n(+ 5 6)";
+    let did_open = format!(r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"file:///sel.rkt","languageId":"racket","version":1,"text":"{}"}}}}}}"#, text.replace("\n", "\\n"));
+    lsp.write_message(&did_open);
+
+    // Evaluate the third line, passing the offset {line: 2, character: 0}
+    let exec_cmd = r#"{"jsonrpc":"2.0","id":20,"method":"workspace/executeCommand","params":{"command":"scheme.evaluateSelection","arguments":["file:///sel.rkt","(+ 5 6)",{"line":2,"character":0}]}}"#;
+    lsp.write_message(exec_cmd);
+
+    // Wait for evaluation
+    let mut found_diag = false;
+    for _ in 0..15 {
+        let body = lsp.read_message();
+        if body.contains("textDocument/publishDiagnostics") {
+            found_diag = true;
+            break;
+        }
+    }
+    assert!(found_diag, "Did not receive publishDiagnostics");
+
+    // Request inlay hints
+    let hint_req = r#"{"jsonrpc":"2.0","id":21,"method":"textDocument/inlayHint","params":{"textDocument":{"uri":"file:///sel.rkt"},"range":{"start":{"line":0,"character":0},"end":{"line":3,"character":0}}}}"#;
+    lsp.write_message(hint_req);
+    
+    let mut found_hints = false;
+    for _ in 0..15 {
+        let body = lsp.read_message();
+        if body.contains("\"id\":21") {
+            // The position should be on line 2, character 7
+            assert!(body.contains("\"line\":2"), "Expected hint on line 2, got: {}", body);
+            assert!(body.contains("\"character\":7"), "Expected hint at character 7, got: {}", body);
+            found_hints = true;
+            break;
+        }
+    }
+    assert!(found_hints, "Did not receive inlay hints");
+}
