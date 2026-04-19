@@ -274,17 +274,17 @@ export function activate(context: vscode.ExtensionContext) {
                 command: 'scheme.restartREPL',
                 arguments: []
             });
-            vscode.window.showInformationMessage('Scheme REPL restarted.');
+            vscode.window.showInformationMessage('Racket restarted.');
         } catch (err) {
-            outputChannel.appendLine(`Restart REPL failed: ${err}`);
-            vscode.window.showErrorMessage(`Failed to restart REPL: ${err}`);
+            outputChannel.appendLine(`Restart Racket failed: ${err}`);
+            vscode.window.showErrorMessage(`Failed to restart Racket: ${err}`);
         }
     });
 
     const clearNamespaceCommand = vscode.commands.registerCommand('scheme.clearNamespace', async () => {
         const activeEditor = vscode.window.activeTextEditor;
         if (!activeEditor) {
-            vscode.window.showErrorMessage('No active editor to clear namespace for.');
+            vscode.window.showErrorMessage('No active editor to reset file for.');
             return;
         }
 
@@ -300,10 +300,10 @@ export function activate(context: vscode.ExtensionContext) {
                 command: 'scheme.clearNamespace',
                 arguments: [uri]
             });
-            vscode.window.showInformationMessage('Scheme Namespace cleared.');
+            vscode.window.showInformationMessage('File reset.');
         } catch (err) {
-            outputChannel.appendLine(`Clear Namespace failed: ${err}`);
-            vscode.window.showErrorMessage(`Failed to clear namespace: ${err}`);
+            outputChannel.appendLine(`Reset File failed: ${err}`);
+            vscode.window.showErrorMessage(`Failed to reset file: ${err}`);
         }
     });
 
