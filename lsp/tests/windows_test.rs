@@ -1,6 +1,7 @@
 mod common;
 use common::LspProcess;
 use serde_json::Value;
+use std::time::Duration;
 
 #[test]
 fn test_crlf_drift_stress() {
@@ -25,7 +26,10 @@ fn test_crlf_drift_stress() {
     // 1. Wait for evaluate signal (inlayHint/refresh)
     let mut found_refresh = false;
     for _ in 0..100 { 
-        let body = lsp.read_message();
+        let body = match lsp.read_message_timeout(Duration::from_secs(10)) {
+            Some(b) => b,
+            None => break,
+        };
         // println!("Received: {}", body);
         if body.contains("workspace/inlayHint/refresh") {
             found_refresh = true;
@@ -41,7 +45,10 @@ fn test_crlf_drift_stress() {
     let mut last_line_correct = false;
     let mut results_count = 0;
 
-    let body = lsp.read_message();
+    let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+        Some(b) => b,
+        None => panic!("Timeout waiting for inlay hint response"),
+    };
     // println!("Received in loop 2: {}", body);
     if body.contains("\"id\":3") {
         let json: Value = serde_json::from_str(&body).unwrap();

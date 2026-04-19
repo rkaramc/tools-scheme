@@ -2,7 +2,7 @@ use lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, InlayHintTooltip, Posi
 use crate::coordinates::LineIndex;
 use crate::evaluator::EvalResult;
 
-pub fn results_to_hints(results: &[EvalResult], line_index: Option<&LineIndex>, doc_text: Option<&str>) -> Vec<InlayHint> {
+pub fn results_to_hints(results: &[EvalResult], _line_index: Option<&LineIndex>, _doc_text: Option<&str>, _log: Option<&std::fs::File>) -> Vec<InlayHint> {
     results.iter()
         .filter(|res| !res.is_error)
         .map(|res| {
@@ -31,17 +31,9 @@ pub fn results_to_hints(results: &[EvalResult], line_index: Option<&LineIndex>, 
                 None
             };
  
-            // Convert Racket's code-point column to LSP's UTF-16 column at the END of the expression.
-            let position = match (line_index, doc_text) {
-                (Some(idx), Some(text)) => {
-                    let range = idx.range_from_span(text, res.line, res.col, res.span);
-                    range.end
-                }
-                _ => {
-                    let lsp_end_line = if res.end_line > 0 { res.end_line.saturating_sub(1) } else { res.line.saturating_sub(1) };
-                    Position::new(lsp_end_line, res.end_col)
-                }
-            };
+            // After normalize_results, end_line/end_col are already LSP UTF-16.
+            let lsp_end_line = if res.end_line > 0 { res.end_line } else { res.line };
+            let position = Position::new(lsp_end_line.saturating_sub(1), res.end_col);
  
             InlayHint {
                 position,
@@ -77,7 +69,7 @@ mod tests {
                 output: "10\n".to_string(), // Output same as result (trimmed)
             }
         ];
-        let hints = results_to_hints(&results, None, None);
+        let hints = results_to_hints(&results, None, None, None);
         assert_eq!(hints.len(), 1);
         if let InlayHintLabel::String(label) = &hints[0].label {
             assert_eq!(label, "  => 10"); // No notebook icon
@@ -100,7 +92,7 @@ mod tests {
                 output: "hello".to_string(), // Output different from result
             }
         ];
-        let hints = results_to_hints(&results, None, None);
+        let hints = results_to_hints(&results, None, None, None);
         assert_eq!(hints.len(), 1);
         if let InlayHintLabel::String(label) = &hints[0].label {
             assert_eq!(label, "  => other 📝"); // Includes notebook icon
@@ -123,7 +115,7 @@ mod tests {
                 output: "hello world\nline 2".to_string(),
             }
         ];
-        let hints = results_to_hints(&results, None, None);
+        let hints = results_to_hints(&results, None, None, None);
         assert_eq!(hints.len(), 1);
         if let InlayHintLabel::String(label) = &hints[0].label {
             assert_eq!(label, "  => hello world 📝"); // Shows output instead of 'void', and has extra lines

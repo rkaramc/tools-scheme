@@ -1,11 +1,14 @@
 use std::process::{Command, Child, Stdio};
 use std::path::PathBuf;
 use std::io::{Read, Write, BufRead, BufReader};
+use std::sync::mpsc::{self, Receiver};
+use std::time::Duration;
+use std::thread;
 
 pub struct LspProcess {
     pub child: Child,
     pub stdin: std::process::ChildStdin,
-    pub reader: BufReader<std::process::ChildStdout>,
+    pub rx: Receiver<String>,
 }
 
 impl LspProcess {
@@ -25,15 +28,49 @@ impl LspProcess {
             .arg(&shim_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("failed to spawn LSP");
 
         let stdin = child.stdin.take().expect("no stdin");
         let stdout = child.stdout.take().expect("no stdout");
-        let reader = BufReader::new(stdout);
+        let stderr = child.stderr.take().expect("no stderr");
+        
+        let (tx, rx) = mpsc::channel();
+        
+        thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                if line.starts_with("Content-Length:") {
+                    let content_length: usize = line.split(':').last().unwrap().trim().parse().unwrap();
+                    // consume empty line
+                    reader.read_line(&mut line).unwrap();
+                    let mut body = vec![0u8; content_length];
+                    if reader.read_exact(&mut body).is_ok() {
+                        if let Ok(msg) = String::from_utf8(body) {
+                            if tx.send(msg).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
 
-        Self { child, stdin, reader }
+        thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                if let Ok(l) = line {
+                    eprintln!("LSP STDERR: {}", l);
+                }
+            }
+        });
+
+        Self { child, stdin, rx }
     }
 
     pub fn write_message(&mut self, msg: &str) {
@@ -42,20 +79,11 @@ impl LspProcess {
     }
 
     pub fn read_message(&mut self) -> String {
-        let mut content_length = 0;
-        loop {
-            let mut line = String::new();
-            self.reader.read_line(&mut line).unwrap();
-            if line.trim().is_empty() {
-                break;
-            }
-            if line.starts_with("Content-Length:") {
-                content_length = line.split(':').last().unwrap().trim().parse::<usize>().unwrap();
-            }
-        }
-        let mut body = vec![0u8; content_length];
-        self.reader.read_exact(&mut body).unwrap();
-        String::from_utf8(body).unwrap()
+        self.rx.recv().expect("failed to read message")
+    }
+
+    pub fn read_message_timeout(&mut self, timeout: Duration) -> Option<String> {
+        self.rx.recv_timeout(timeout).ok()
     }
 
     pub fn initialize(&mut self) {

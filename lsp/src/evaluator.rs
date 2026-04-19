@@ -104,6 +104,13 @@ impl Evaluator {
     }
 
     #[allow(unused)]
+    pub fn log(&self, msg: &str) {
+        let mut file = &self.global_session;
+        let _ = writeln!(file, "{}", msg);
+        let _ = file.flush();
+    }
+
+    #[allow(unused)]
     pub fn racket_path(&self) -> &str {
         &self.racket_path
     }
@@ -325,27 +332,44 @@ impl Evaluator {
 
     #[allow(unused)]
     pub fn clear_namespace(&mut self, uri: &str) -> Result<()> {
-        let state = self.ensure_alive()?;
         let req = serde_json::json!({
             "type": "clear-namespace",
             "uri": uri
         });
         let mut line = serde_json::to_string(&req)?;
         line.push('\n');
-        state.stdin.write_all(line.as_bytes())?;
-        state.stdin.flush()?;
-        
+        self.log(&format!("DEBUG: Sending clear-namespace to racket: {}", line));
+
+        {
+            let state = self.ensure_alive()?;
+            state.stdin.write_all(line.as_bytes())?;
+            state.stdin.flush()?;
+        }
+
         // Wait for READY to ensure the command was processed
         loop {
-            let state = self.state.as_mut().unwrap();
-            let buffer = state.stdout_rx.recv_timeout(self.timeout)?;
+            let buffer = match self.state.as_mut().unwrap().stdout_rx.recv_timeout(self.timeout) {
+                Ok(l) => l,
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    if let Some(mut state) = self.state.take() {
+                        let _ = state.child.kill();
+                        let _ = state.child.wait();
+                    }
+                    return Err(anyhow!("clear-namespace timed out after {:?}", self.timeout));
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    self.state.take();
+                    return Err(anyhow!("REPL process exited unexpectedly"));
+                }
+            };
+
+            self.log(&format!("DEBUG: clear_namespace received: {:?}", buffer));
             if buffer.trim() == "READY" {
                 break;
             }
         }
         Ok(())
     }
-
     #[allow(unused)]
     pub fn parse(&mut self, target_path: &PathBuf) -> Result<Vec<RangeResult>> {
         let content = std::fs::read_to_string(target_path)?;
