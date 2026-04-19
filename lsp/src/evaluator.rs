@@ -653,6 +653,111 @@ mod tests {
     }
 
     #[test]
+    fn test_lang_recursive_function_no_namespace_mismatch() {
+        // Reproduces ts-h31: a recursive define in a #lang racket file produces
+        // "namespace mismatch; cannot locate module instance" errors on the
+        // self-reference call sites when evaluate-port pre-expands the module
+        // and then evals each body form individually.
+        let mut repro_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        repro_dir.push("repro");
+
+        let path = repro_dir.join("repro_ts_h31.rkt");
+        let content = std::fs::read_to_string(&path)
+            .expect("repro_ts_h31.rkt not found in lsp/repro/");
+
+        let path_str = path.to_string_lossy().replace('\\', "/");
+        let uri = format!("file:///{}", path_str);
+
+        let mut evaluator = Evaluator::new(None).unwrap();
+        evaluator.timeout = Duration::from_secs(15);
+
+        let results = evaluator
+            .evaluate_str(&content, Some(&uri), Some("repro_ts_h31.rkt"), None)
+            .unwrap();
+
+        let namespace_errors: Vec<&str> = results
+            .iter()
+            .filter(|r| r.is_error && r.result.contains("namespace mismatch"))
+            .map(|r| r.result.as_str())
+            .collect();
+
+        assert!(
+            namespace_errors.is_empty(),
+            "Got namespace mismatch errors (ts-h31 not fixed):\n{:#?}",
+            namespace_errors
+        );
+
+        // (lat? '(a b c)) => #t, (lat? '(a (b) c)) => #f
+        let values: Vec<&str> = results.iter().map(|r| r.result.as_str()).collect();
+        assert!(
+            values.contains(&"#t"),
+            "Expected (lat? '(a b c)) = #t, got: {:?}",
+            values
+        );
+        assert!(
+            values.contains(&"#f"),
+            "Expected (lat? '(a (b) c)) = #f, got: {:?}",
+            values
+        );
+    }
+
+    #[test]
+    fn test_relative_require_resolves_to_file_directory() {
+        // Reproduces ts-k2w: relative (require "...") in a #lang file resolves
+        // against the shim's CWD instead of the file's directory.
+        //
+        // repro_require_main.rkt does (require "repro_require_helper.rkt")
+        // where both files live in lsp/repro/.  Passing the real file URI
+        // should make the shim set current-directory to that folder so the
+        // require succeeds.
+        let mut repro_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        repro_dir.push("repro");
+
+        let main_path = repro_dir.join("repro_require_main.rkt");
+        let content = std::fs::read_to_string(&main_path)
+            .expect("repro_require_main.rkt not found in lsp/repro/");
+
+        // Build a file:/// URI matching the real path so the shim can extract
+        // the directory.  Use forward slashes; percent-encode the colon on
+        // Windows to match what VS Code sends.
+        let path_str = main_path
+            .to_string_lossy()
+            .replace('\\', "/");
+        let uri = format!("file:///{}", path_str);
+
+        let mut evaluator = Evaluator::new(None).unwrap();
+        evaluator.timeout = Duration::from_secs(15);
+
+        let results = evaluator
+            .evaluate_str(&content, Some(&uri), Some("repro_require_main.rkt"), None)
+            .unwrap();
+
+        let has_require_error = results
+            .iter()
+            .any(|r| r.is_error && r.result.contains("cannot open module file"));
+
+        assert!(
+            !has_require_error,
+            "Relative require failed — current-directory not set to file directory.\n\
+             Results: {:#?}",
+            results
+        );
+
+        // After the fix (square 5) → 25 and (square 12) → 144 should appear.
+        let values: Vec<&str> = results.iter().map(|r| r.result.as_str()).collect();
+        assert!(
+            values.contains(&"25"),
+            "Expected (square 5) = 25, got: {:?}",
+            values
+        );
+        assert!(
+            values.contains(&"144"),
+            "Expected (square 12) = 144, got: {:?}",
+            values
+        );
+    }
+
+    #[test]
     fn test_evaluate_str_logging() {
         let mut evaluator = Evaluator::new(None).unwrap();
         let temp_dir = std::env::temp_dir();
