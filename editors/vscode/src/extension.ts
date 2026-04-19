@@ -247,7 +247,14 @@ export function activate(context: vscode.ExtensionContext) {
         try {
             const result = await client.sendRequest('workspace/executeCommand', {
                 command: 'scheme.evaluateSelection',
-                arguments: [uri, selectedText]
+                arguments: [
+                    uri,
+                    selectedText,
+                    {
+                        line: selection.start.line,
+                        character: selection.start.character
+                    }
+                ]
             });
             outputChannel.appendLine(`Evaluate selection command completed. Results:\n${JSON.stringify(result, null, 2)}`);
         } catch (err) {
