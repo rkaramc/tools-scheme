@@ -1,0 +1,82 @@
+## tools-scheme v0.1.0
+
+- docs: add user guide for ideal editing workflow
+- fix(lsp): extract body forms from module for code lenses and evaluation
+- fix(lsp): apply selection offset to evaluateSelection inlay hints
+- fix(lsp): clear namespace also removes inlay hints results
+- fix(lsp): simplify module evaluation and add regression tests
+- chore(lsp): remove CRLF normalization from Racket shim
+- fix(lsp): resolve CRLF coordinate drift in syntax spans
+- refactor(lsp): split crate into library and binary
+- deps(lsp): update lsp-types to 0.97
+- feat(lsp): Add 'Clear Scheme Namespace' command
+- chore(lsp): Use unique filenames for global.session
+- refactor(lsp): Centralize coordinate calculation in Rust using syntax span
+- perf(lsp): Move evaluation dispatch to non-blocking async model
+- security(lsp): Implement strict Racket path validation and error logging
+- perf(lsp): Optimize Racket cache and IPC serialization
+- fix(lsp): Improve Thread Safety and Robustness for RwLock
+- feat(lsp): Add uri (as file path) to .session output in evaluator
+- refactor(lsp): consolidate evaluation and range logic in Racket shim
+- chore: add MIT License file
+- fix(lsp): update inlay hint representation and CRLF drift tests
+- feat(lsp): display first line of output in inlay hints for void results
+- fix(lsp): resolve coordinate drift between Racket shim and Rust LSP
+- fix: resolve clippy issues
+- test: add regression suite for CRLF drift and UTF-16 positioning; refactor test helpers
+- cleanup: remove TS-495 reproduction script and temporary test artifacts
+- chore: move test/repro files out of lsp/src
+- cleanup project root
+- docs: updated README.md
+- Include cross-platform binary artifacts in CI/CD (ts-v7r follow-up)
+- Make LSP build and VSCE package cross-platform (ts-v7r)
+- Address Clippy warnings and idiomatic patterns (ts-3x1)
+- refactor: structured results in eval-shim.rkt
+- feat: add configurable Racket path support [ts-h5w]
+- fix: improve REPL error recovery by backtracking port on syntax errors [ts-qya]
+- test: reproduce ts-qya (syntax error aborts evaluation)
+- refactor: embed eval-shim.rkt with robust 'sticky lock', local cleanup fix, and startup sweep [ts-0dt]
+- refactor: unified LSP client initialization and binary preparation [ts-7qr]
+- refactor: gate Windows binary-copy workaround behind development flag [ts-oqq]
+- fix: robust cleanup for temporary LSP binaries [ts-q8l]
+- feat: delegate s-expression parsing to Racket [ts-2xo]
+- feat: isolated namespaces per document with lifecycle management [ts-yug]
+- feat(lsp): refactor evaluator for robust timeout recovery and atomic process management (ts-52p)
+- feat: add evaluation timeout and prevent zombie processes (ts-52p)
+- feature(lsp): implement per-file session logging with DocumentStore lifecycle (ts-lqx)
+- refactor(racket): simplify syntax-end calculation (ts-2w6)
+- fix(lsp): support full diagnostic ranges and move inlay hints to suffix (ts-z8w)
+- fix(racket): stop line ending normalization to prevent coordinate drift (ts-495)
+- fix(vscode): implement robust LSP discovery with PATH and dev guards (ts-coi)
+- fix(lsp): add crossbeam-channel dependency and retain request_id for future cancellation (ts-4vi)
+- feat(lsp): async evaluation to prevent blocking main RPC loop (ts-4vi)
+- fix(lsp): implement centralized coordinate mapping using LineIndex (ts-6ng, ts-kjd, ts-svn)
+- fix(lsp): use accurate diagnostic ranges (ts-9kt)
+- feat(lsp): add evaluate CodeLens to top-level s-expressions (ts-h9o)
+- perf(eval): optimize coordinate calculation (ts-jwp)
+- feat(lsp): implement session logging (ts-i9p)
+- feat(lsp): add evaluate selection command (ts-w23)
+- fix(eval): use print style (~v) for display-result (ts-zey)
+- feat(lsp): implement persistent REPL process (ts-unh)
+- feat(vscode): auto-restart LSP server on binary change (ts-pkp)
+- feat(vscode): copy LSP binary to temporary location on Windows (ts-min)
+- fix(eval): extract correct source location from runtime exceptions (ts-033)
+- fix(lsp): Map AST column to UTF-16 offset in Rust LSP server (ts-w7w)
+- feat(lsp): Improve inlay hint positioning and support void-to-output conversion (ts-r6h, ts-275)
+- feat(lsp): Report and display inlay hints on the last line of expressions (ts-r6h)
+- feat(lsp): Simplify inlay hints by hiding redundant tooltips (ts-kdh)
+- feat(lsp): Implement dedicated DocumentStore for buffer state management (ts-5kz)
+- feat(lsp): Support #lang files in Racket shim via module instantiation (ts-5dl)
+- refactor(lsp): Modularize main.rs into evaluator, parser, and inlay_hints (ts-k1f)
+- test(lsp): Add unit and integration tests for evaluator and LSP flow (ts-dl1)
+- feat(lsp): Implement buffer tracking and string evaluation (ts-hlp)
+- feat(vscode/lsp): Add TOOLS_SCHEME_LSP_PATH env var fallback (ts-8xt)
+- docs: Update Evaluate to Inlay Hints spec and initialize Beads issue tracker
+- Capture per-expression stdout for write/display in inlay hints
+- Fix inlay hint positioning, JSON parsing, and filter errors in LSP
+- Fix scheme evaluate command collision and inlay hints
+- initialize vs code extension and improve lsp reliability
+- implement scheme/racket evaluation to inlay hints in lsp
+- create new lsp project in workspace
+- setup rust workspace
+- initial commit
