@@ -128,18 +128,20 @@
                                                     (define-values (l c end-c span pos) (get-exn-location e stx))
                                                     (display-result (make-range l (or (syntax-column stx) 0) l end-c span pos) e #:is-error #t))])
                          (define expanded (expand stx))
-                         (syntax-case expanded (module)
-                           [(module name lang (mb . body))
-                            (let ([m-ns (current-namespace)])
-                              (with-handlers ([exn:fail? (lambda (e)
-                                                           ;; If language requirement fails, try body anyway
-                                                           (for ([form (syntax->list #'body)])
-                                                             (evaluate-single-form form m-ns)))])
-                                (namespace-require (syntax->datum #'lang))
-                                (for ([form (syntax->list #'body)])
-                                  (evaluate-single-form form m-ns))))]
-                           [_
-                            (evaluate-single-form stx (current-namespace))]))))))
+                         (define expanded-l (and (syntax? expanded) (syntax->list expanded)))
+                         (if (and expanded-l (>= (length expanded-l) 4) (eq? (syntax-e (car expanded-l)) 'module))
+                             (let* ([lang (caddr expanded-l)]
+                                    [body-stx (cadddr expanded-l)]
+                                    [body-list (syntax->list body-stx)]
+                                    [m-ns (current-namespace)])
+                               (with-handlers ([exn:fail? (lambda (e)
+                                                            ;; If language requirement fails, try body anyway
+                                                            (for ([form (if body-list (cdr body-list) '())])
+                                                              (evaluate-single-form form m-ns)))])
+                                 (namespace-require (syntax->datum lang))
+                                 (for ([form (if body-list (cdr body-list) '())])
+                                   (evaluate-single-form form m-ns))))
+                             (evaluate-single-form stx (current-namespace))))))))
 
 ;; --- Entry Points ---
 
@@ -165,15 +167,28 @@
   (define cached (cache-content! content source))
   (define port (open-input-string cached))
   (port-count-lines! port)
-  (for-each-syntax port source
-                   (lambda (stx)
-                     (define-values (end-line end-col) (get-syntax-end stx))
-                     (define start-line (or (syntax-line stx) 1))
-                     (define start-col (or (syntax-column stx) 0))
-                     (define span (or (syntax-span stx) 0))
-                     (define pos (or (syntax-position stx) 1))
-                     (define range (hash-set (make-range start-line start-col end-line end-col span pos) 'type "range"))
-                     (displayln (jsexpr->string range) real-stdout))))
+  
+  (define (emit-ranges stx)
+    (define l (and (syntax? stx) (syntax->list stx)))
+    (if (and l (>= (length l) 4) (eq? (syntax-e (car l)) 'module))
+        (let* ([body-stx (cadddr l)]
+               [body-list (syntax->list body-stx)])
+          (if (and body-list (>= (length body-list) 1) (eq? (syntax-e (car body-list)) '#%module-begin))
+              (for ([form (cdr body-list)])
+                (emit-ranges form))
+              (emit-range stx)))
+        (emit-range stx)))
+
+  (define (emit-range stx)
+    (define-values (end-line end-col) (get-syntax-end stx))
+    (define start-line (or (syntax-line stx) 1))
+    (define start-col (or (syntax-column stx) 0))
+    (define span (or (syntax-span stx) 0))
+    (define pos (or (syntax-position stx) 1))
+    (define range (hash-set (make-range start-line start-col end-line end-col span pos) 'type "range"))
+    (displayln (jsexpr->string range) real-stdout))
+
+  (for-each-syntax port source emit-ranges))
 
 (define (evaluate-string-content content uri)
   (define source (or uri 'repl))

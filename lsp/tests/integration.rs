@@ -175,3 +175,58 @@ fn test_evaluate_selection_offset() {
     }
     assert!(found_hints, "Did not receive inlay hints");
 }
+
+#[test]
+fn test_lang_file_code_lenses() {
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize();
+
+    let text = "#lang racket\n(+ 1 2)\n(+ 3 4)";
+    let did_open = format!(r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"file:///lang-lens.rkt","languageId":"racket","version":1,"text":"{}"}}}}}}"#, text.replace("\n", "\\n"));
+    lsp.write_message(&did_open);
+
+    // Wait for the background parse task to finish
+    let mut found_refresh = false;
+    for _ in 0..15 {
+        let body = lsp.read_message();
+        if body.contains("workspace/codeLens/refresh") {
+            found_refresh = true;
+            break;
+        }
+    }
+    assert!(found_refresh, "Did not receive code lens refresh after open");
+
+    // Request code lenses
+    let lens_req = r#"{"jsonrpc":"2.0","id":30,"method":"textDocument/codeLens","params":{"textDocument":{"uri":"file:///lang-lens.rkt"}}}"#;
+    lsp.write_message(lens_req);
+
+    let mut found_lenses = false;
+    for _ in 0..15 {
+        let body = lsp.read_message();
+        if body.contains("\"id\":30") {
+            // We should get 2 code lenses because there are 2 forms (+ 1 2) and (+ 3 4)
+            // (The #lang racket line itself is part of the module declaration)
+            let lenses_count = body.matches("scheme.evaluateSelection").count();
+            assert_eq!(lenses_count, 2, "Expected 2 code lenses, got: {}", body);
+            found_lenses = true;
+            break;
+        }
+    }
+    assert!(found_lenses, "Did not receive code lens response");
+
+    // Evaluate the whole file to ensure it doesn't throw 'racket: undefined'
+    let exec_cmd = r#"{"jsonrpc":"2.0","id":31,"method":"workspace/executeCommand","params":{"command":"scheme.evaluate","arguments":["file:///lang-lens.rkt"]}}"#;
+    lsp.write_message(exec_cmd);
+
+    let mut found_diag = false;
+    for _ in 0..15 {
+        let body = lsp.read_message();
+        if body.contains("textDocument/publishDiagnostics") {
+            assert!(!body.contains("racket: undefined"), "Received 'racket: undefined' error!");
+            assert!(!body.contains("\"is_error\":true"), "Received evaluation error: {}", body);
+            found_diag = true;
+            break;
+        }
+    }
+    assert!(found_diag, "Did not receive publishDiagnostics");
+}
