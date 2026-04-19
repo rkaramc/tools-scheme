@@ -25,7 +25,7 @@
         "commands": [
             {
                 "command": "scheme.runEvaluation",
-                "title": "Evaluate Scheme File",
+                "title": "Evaluate File",
                 "icon": "$(play)"
             },
             {
@@ -35,20 +35,45 @@
             },
             {
                 "command": "scheme.restartREPL",
-                "title": "Restart Scheme REPL",
+                "title": "Restart Racket",
                 "icon": "$(refresh)"
             },
             {
                 "command": "scheme.clearNamespace",
-                "title": "Clear Scheme Namespace",
+                "title": "Reset File",
                 "icon": "$(clear-all)"
+            }
+        ],
+        "submenus": [
+            {
+                "id": "scheme.submenu",
+                "label": "Scheme Toolbox",
+                "icon": "$(tools)"
             }
         ],
         "menus": {
             "editor/title": [
                 {
-                    "command": "scheme.runEvaluation",
+                    "submenu": "scheme.submenu",
                     "group": "navigation",
+                    "when": "editorLangId == racket || editorLangId == scheme"
+                }
+            ],
+            "scheme.submenu": [
+                {
+                    "command": "scheme.runEvaluation",
+                    "when": "editorLangId == racket || editorLangId == scheme"
+                },
+                {
+                    "command": "scheme.runEvaluateSelection",
+                    "when": "editorLangId == racket || editorLangId == scheme"
+                },
+                {
+                    "command": "scheme.clearNamespace",
+                    "when": "editorLangId == racket || editorLangId == scheme"
+                },
+                {
+                    "command": "scheme.restartREPL",
                     "when": "editorLangId == racket || editorLangId == scheme"
                 }
             ],
