@@ -66,7 +66,6 @@ impl LineIndex {
     }
 
     /// Access the pre-computed line offsets.
-    #[allow(unused)]
     pub fn line_offsets(&self) -> &[usize] {
         &self.line_offsets
     }
@@ -74,18 +73,14 @@ impl LineIndex {
     /// Convert a line number and column offset into a byte index into `text`.
     ///
     /// `line` is 0-indexed. `col` is 0-indexed in the specified `unit`.
-    #[allow(unused)]
     pub fn byte_offset(&self, text: &str, line: usize, col: usize, unit: OffsetUnit) -> usize {
         let line_start = self.line_start(line);
         let line_text = &text[line_start..];
 
         let mut col_remaining = col;
-        let mut chars = RacketCharIndices::new(line_text);
-        while let Some((byte_idx, s)) = chars.next() {
-            if s == "\n" || s == "\r" || s == "\r\n" {
-                return line_start + byte_idx;
-            }
-            if col_remaining == 0 {
+        let chars = RacketCharIndices::new(line_text);
+        for (byte_idx, s) in chars {
+            if matches!(s, "\n" | "\r" | "\r\n") || col_remaining == 0 {
                 return line_start + byte_idx;
             }
             let unit_width = match unit {
@@ -101,21 +96,18 @@ impl LineIndex {
     /// Convert a Racket code-point column to an LSP UTF-16 column.
     ///
     /// `line` is 0-indexed. `code_point_col` is 0-indexed.
-    #[allow(unused)]
     pub fn code_point_to_utf16(&self, text: &str, line: usize, code_point_col: usize) -> u32 {
         let line_start = self.line_start(line);
         let line_text = &text[line_start..];
 
-        line_text
-            .chars()
-            .take_while(|c| *c != '\n' && *c != '\r')
+        RacketCharIndices::new(line_text)
+            .take_while(|(_, s)| !matches!(*s, "\n" | "\r" | "\r\n"))
             .take(code_point_col)
-            .map(|c| c.len_utf16() as u32)
+            .map(|(_, s)| s.chars().map(|c| c.len_utf16() as u32).sum::<u32>())
             .sum()
     }
 
     /// Convert an LSP `Position` (0-indexed line, UTF-16 column) to a byte offset.
-    #[allow(unused)]
     pub fn lsp_position_to_byte(&self, text: &str, pos: Position) -> usize {
         self.byte_offset(text, pos.line as usize, pos.character as usize, OffsetUnit::Utf16)
     }
@@ -138,7 +130,6 @@ impl LineIndex {
 
     /// Convert a Racket code-point position (1-indexed line, 0-indexed column) and span
     /// into an LSP `Range` (0-indexed line/column, UTF-16).
-    #[allow(unused)]
     pub fn range_from_span(&self, text: &str, line: u32, col: u32, span: u32) -> lsp_types::Range {
         let start_line = line.saturating_sub(1) as usize;
         let start_col = col as usize;
@@ -146,15 +137,11 @@ impl LineIndex {
         let start_offset = self.byte_offset(text, start_line, start_col, OffsetUnit::CodePoint);
         
         // Find end offset by walking `span` code points
-        let mut end_offset = start_offset;
-        let mut chars = RacketCharIndices::new(&text[start_offset..]);
-        for _ in 0..span {
-            if let Some((_, s)) = chars.next() {
-                end_offset += s.len();
-            } else {
-                break;
-            }
-        }
+        let end_offset = start_offset
+            + RacketCharIndices::new(&text[start_offset..])
+                .take(span as usize)
+                .map(|(_, s)| s.len())
+                .sum::<usize>();
         
         let start_pos = self.offset_to_position(text, start_offset);
         let end_pos = self.offset_to_position(text, end_offset);
