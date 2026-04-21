@@ -9,7 +9,7 @@ Here is how I would sequence the remaining open issues. I've grouped them into t
 - [x] **`ts-3is` — Refactor SharedState to move results and ranges into DocumentStore**
   -   **Why first:** This is a major structural change. It dictates *where* `shift_results` and `results` actually live. Doing this first prevents us from rewriting `shift_results` logic only to have to move it to a different file immediately after.
 
-- [ ] **`ts-f49` — Streamline `shift_results` logic**
+- [x] **`ts-f49` — Streamline `shift_results` logic**
   -   **Why second:** Once `shift_results` is safely encapsulated in `documents.rs` (thanks to step 1), we can confidently optimize its internal logic (removing the redundant $O(N)$ string equality checks) without interfering with `server.rs`.
 
 - [ ] **`ts-j9r` — Support multiple content changes in DidChangeTextDocument**
