@@ -776,51 +776,23 @@ fn recalculate_from_byte_pos(results: &mut [EvalResult], text: &str, line_index:
 }
 
 fn shift_results(results: &mut Vec<EvalResult>, old_text: &str, new_text: &str, new_idx: &crate::coordinates::LineIndex) {
-    // TODO: Refactor to optimize - potential performance impact due to string cloning and indexing on each keystroke.
     if results.is_empty() { return; }
 
-    // let byte_delta = (new_text.len() as i32) - (old_text.len() as i32);
-    // if byte_delta == 0 && old_text == new_text { return; }
-    if old_text == new_text { return; }
+    let byte_delta = (new_text.len() as i32) - (old_text.len() as i32);
+    if byte_delta == 0 && old_text == new_text { return; }
 
     // Find the earliest point of divergence (common prefix)
     let mut pivot = old_text.as_bytes().iter()
         .zip(new_text.as_bytes().iter())
-        .take_while(|(a, b)| a == b)
-        .count();
+        .position(|(a, b)| a != b)
+        .unwrap_or_else(|| old_text.len().min(new_text.len()));
 
     while pivot > 0 && (!old_text.is_char_boundary(pivot) || !new_text.is_char_boundary(pivot)) {
         pivot -= 1;
     }
 
-    let mut common_suffix_len = old_text.as_bytes().iter().rev()
-        .zip(new_text.as_bytes().iter().rev())
-        .take_while(|(a, b)| a == b)
-        .count();
+    let mut lazy_char_delta: Option<i32> = None;
 
-    common_suffix_len = common_suffix_len
-        .min(old_text.len() - pivot)
-        .min(new_text.len() - pivot);
-
-    while common_suffix_len > 0 {
-        let old_suffix_start = old_text.len() - common_suffix_len;
-        let new_suffix_start = new_text.len() - common_suffix_len;
-        if old_text.is_char_boundary(old_suffix_start) && new_text.is_char_boundary(new_suffix_start) {
-            break;
-        }
-        common_suffix_len -= 1;
-    }
-
-    let replaced_text = &old_text[pivot..old_text.len() - common_suffix_len];
-    let inserted_text = &new_text[pivot..new_text.len() - common_suffix_len];
-
-    let count_racket_chars = |s: &str| -> usize {
-        crate::coordinates::RacketCharIndices::new(s).count()
-    };
-
-    let char_delta = (count_racket_chars(inserted_text) as i32) - (count_racket_chars(replaced_text) as i32);
-
-    let byte_delta = (new_text.len() as i32) - (old_text.len() as i32);
     for res in results.iter_mut() {
         let pos_idx = res.pos.saturating_sub(1) as usize;
 
@@ -839,12 +811,41 @@ fn shift_results(results: &mut Vec<EvalResult>, old_text: &str, new_text: &str, 
             res.pos = (res.pos as i32 + byte_delta).max(1) as u32;
         } else if pivot < old_end_byte_idx {
             // Edit is inside the expression
+            let char_delta = *lazy_char_delta.get_or_insert_with(|| {
+                let mut common_suffix_len = old_text.as_bytes().iter().rev()
+                    .zip(new_text.as_bytes().iter().rev())
+                    .position(|(a, b)| a != b)
+                    .unwrap_or_else(|| old_text.len().min(new_text.len()));
+
+                common_suffix_len = common_suffix_len
+                    .min(old_text.len() - pivot)
+                    .min(new_text.len() - pivot);
+
+                while common_suffix_len > 0 {
+                    let old_suffix_start = old_text.len() - common_suffix_len;
+                    let new_suffix_start = new_text.len() - common_suffix_len;
+                    if old_text.is_char_boundary(old_suffix_start) && new_text.is_char_boundary(new_suffix_start) {
+                        break;
+                    }
+                    common_suffix_len -= 1;
+                }
+
+                let replaced_text = &old_text[pivot..old_text.len() - common_suffix_len];
+                let inserted_text = &new_text[pivot..new_text.len() - common_suffix_len];
+
+                let count_racket_chars = |s: &str| -> usize {
+                    crate::coordinates::RacketCharIndices::new(s).count()
+                };
+
+                (count_racket_chars(inserted_text) as i32) - (count_racket_chars(replaced_text) as i32)
+            });
+
             res.span = (res.span as i32 + char_delta).max(1) as u32;
         }
     }
 
     // Standardize all coordinates to UTF-16 based on the fresh byte positions.
-    recalculate_from_byte_pos(results, new_text, &new_idx);
+    recalculate_from_byte_pos(results, new_text, new_idx);
 }
 
 
