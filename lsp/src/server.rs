@@ -788,6 +788,7 @@ fn recalculate_from_byte_pos(results: &mut [EvalResult], text: &str, line_index:
 }
 
 fn shift_results(results: &mut Vec<EvalResult>, old_text: &str, new_text: &str) {
+    // TODO: Refactor to optimize - potential performance impact due to string cloning and indexing on each keystroke.
     if results.is_empty() { return; }
 
     let byte_delta = (new_text.len() as i32) - (old_text.len() as i32);
