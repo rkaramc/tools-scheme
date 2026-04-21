@@ -237,7 +237,6 @@ pub fn eval_worker(
                 evaluator.log(&format!("EvalAction::Clear for {}", task.uri));
                 let _ = evaluator.clear_namespace(&task.uri);
                 let mut lock = state.write().unwrap_or_else(|e| e.into_inner());
-                lock.ranges.remove(&task.uri);
                 lock.results.remove(&task.uri);
 
                 evaluator.log("Namespace cleared, sending refreshes");

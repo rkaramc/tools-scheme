@@ -268,3 +268,62 @@ fn test_lang_file_code_lenses() {
     }
     assert!(found_diag, "Did not receive publishDiagnostics");
 }
+
+#[test]
+fn test_clear_namespace_preserves_codelens() {
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize();
+
+    let text = "(+ 1 2)\n(+ 3 4)";
+    let did_open = format!(r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"file:///clear-lens.rkt","languageId":"racket","version":1,"text":"{}"}}}}}}"#, text.replace("\n", "\\n"));
+    lsp.write_message(&did_open);
+
+    let mut found_refresh = false;
+    for _ in 0..15 {
+        if let Some(body) = lsp.read_message_timeout(std::time::Duration::from_secs(10)) {
+            if body.contains("workspace/codeLens/refresh") {
+                found_refresh = true;
+                break;
+            }
+        }
+    }
+    assert!(found_refresh, "Did not receive code lens refresh after open");
+
+    // Clear namespace
+    let clear_cmd = r#"{"jsonrpc":"2.0","id":12,"method":"workspace/executeCommand","params":{"command":"scheme.clearNamespace","arguments":["file:///clear-lens.rkt"]}}"#;
+    lsp.write_message(clear_cmd);
+    
+    let mut found_clear_ack = false;
+    let mut found_second_refresh = false;
+    for _ in 0..20 {
+        if let Some(body) = lsp.read_message_timeout(std::time::Duration::from_secs(10)) {
+            if body.contains("\"id\":12") {
+                found_clear_ack = true;
+            }
+            if body.contains("workspace/codeLens/refresh") {
+                found_second_refresh = true;
+            }
+            if found_clear_ack && found_second_refresh {
+                break;
+            }
+        }
+    }
+    assert!(found_clear_ack, "Did not receive clear ack");
+    assert!(found_second_refresh, "Did not receive second code lens refresh");
+
+    // Request code lenses - should NOT be empty
+    let req = r#"{"jsonrpc":"2.0","id":20,"method":"textDocument/codeLens","params":{"textDocument":{"uri":"file:///clear-lens.rkt"}}}"#;
+    lsp.write_message(req);
+
+    let mut found_lenses = false;
+    for _ in 0..15 {
+        if let Some(body) = lsp.read_message_timeout(std::time::Duration::from_secs(10)) {
+            if body.contains("\"id\":20") {
+                assert!(body.contains("scheme.evaluateSelection"), "Code lenses missing: {}", body);
+                found_lenses = true;
+                break;
+            }
+        }
+    }
+    assert!(found_lenses, "Did not receive code lens response");
+}
