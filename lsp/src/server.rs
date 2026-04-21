@@ -316,27 +316,31 @@ impl Server {
             let uri = params.text_document.uri.to_string();
             let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
             
-            // Heuristic shift for results before we update the document text
-            let state_ref = &mut *state;
-            if let Some(doc) = state_ref.document_store.get(&uri) {
-                if let Some(change) = params.content_changes.first() {
+            if let Some(change) = params.content_changes.into_iter().last() {
+                let new_text = change.text;
+                let new_idx = crate::coordinates::LineIndex::new(&new_text);
+                
+                let state_ref = &mut *state;
+                if let Some(doc) = state_ref.document_store.get(&uri) {
                     if let Some(results) = state_ref.results.get_mut(&uri) {
-                        shift_results(results, &doc.text, &change.text);
+                        shift_results(results, &doc.text, &new_text, &new_idx);
                     }
                 }
-            }
 
-            state.document_store.change(
-                &uri,
-                params.text_document.version,
-                params.content_changes,
-            );
-            if let Some(doc) = state.document_store.get(&uri) {
-                let version = doc.version;
-                let _ = self.eval_tx.send(EvalTask {
-                    uri,
-                    action: EvalAction::Parse { version },
-                });
+                state.document_store.update_text_and_index(
+                    &uri,
+                    params.text_document.version,
+                    new_text,
+                    new_idx,
+                );
+
+                if let Some(doc) = state.document_store.get(&uri) {
+                    let version = doc.version;
+                    let _ = self.eval_tx.send(EvalTask {
+                        uri,
+                        action: EvalAction::Parse { version },
+                    });
+                }
             }
         } else if let Some(params) = cast_notification::<DidCloseTextDocument>(&not) {
             let uri = params.text_document.uri.to_string();
@@ -608,7 +612,8 @@ mod tests {
             output: "".to_string(),
         }];
 
-        super::shift_results(&mut results, old_text, new_text);
+        let new_idx = crate::coordinates::LineIndex::new(new_text);
+        super::shift_results(&mut results, old_text, new_text, &new_idx);
 
         // Should be shifted to line 3
         assert_eq!(results[0].line, 3);
@@ -630,7 +635,8 @@ mod tests {
             pos: 3, result: "res".to_string(), is_error: false, output: "".to_string()
         }];
         
-        super::shift_results(&mut results, old_text, new_text);
+        let new_idx = crate::coordinates::LineIndex::new(new_text);
+        super::shift_results(&mut results, old_text, new_text, &new_idx);
         
         // Common prefix "AA" (len 2). Pivot 2.
         // pos_idx = 3-1 = 2. 2 >= 2. Shifted!
@@ -646,7 +652,8 @@ mod tests {
             line: 1, col: 1, end_line: 1, end_col: 1, span: 0,
             pos: 2, result: "res".to_string(), is_error: false, output: "".to_string()
         }];
-        super::shift_results(&mut results, old_text, new_text);
+        let new_idx2 = crate::coordinates::LineIndex::new(new_text);
+        super::shift_results(&mut results, old_text, new_text, &new_idx2);
         // Prefix 0. Pivot 0. 1 >= 0. Shifted.
         assert_eq!(results[0].pos, 3);
         assert_eq!(results[0].line, 1);
@@ -666,7 +673,8 @@ mod tests {
             pos: 1, result: "10".to_string(), is_error: false, output: "".to_string()
         }];
 
-        super::shift_results(&mut results, old_text, new_text);
+        let new_idx = crate::coordinates::LineIndex::new(new_text);
+        super::shift_results(&mut results, old_text, new_text, &new_idx);
 
         // Edit happened at index 11 (after '10', inserting '0').
         // Pos remains 1, but span should increase by 1 to 14.
@@ -780,7 +788,7 @@ fn recalculate_from_byte_pos(results: &mut [EvalResult], text: &str, line_index:
     }
 }
 
-fn shift_results(results: &mut Vec<EvalResult>, old_text: &str, new_text: &str) {
+fn shift_results(results: &mut Vec<EvalResult>, old_text: &str, new_text: &str, new_idx: &crate::coordinates::LineIndex) {
     // TODO: Refactor to optimize - potential performance impact due to string cloning and indexing on each keystroke.
     if results.is_empty() { return; }
 
@@ -824,8 +832,6 @@ fn shift_results(results: &mut Vec<EvalResult>, old_text: &str, new_text: &str) 
     };
 
     let char_delta = (count_racket_chars(inserted_text) as i32) - (count_racket_chars(replaced_text) as i32);
-
-    let new_idx = crate::coordinates::LineIndex::new(new_text);
 
     let byte_delta = (new_text.len() as i32) - (old_text.len() as i32);
     for res in results.iter_mut() {
