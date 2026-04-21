@@ -77,18 +77,10 @@ pub fn eval_worker(
                         // Convert Racket's character offsets to byte offsets relative to the evaluated content.
                         for res in &mut results {
                             let char_idx = res.pos.saturating_sub(1) as usize;
-                            let mut byte_off = 0;
-                            let mut chars = content.chars().peekable();
-                            for _ in 0..char_idx {
-                                if let Some(c) = chars.next() {
-                                    byte_off += c.len_utf8();
-                                    if c == '\r' && chars.peek() == Some(&'\n') {
-                                        if let Some(next_c) = chars.next() {
-                                            byte_off += next_c.len_utf8();
-                                        }
-                                    }
-                                } else { break; }
-                            }
+                            let byte_off: usize = crate::coordinates::RacketCharIndices::new(&content)
+                                .take(char_idx)
+                                .map(|(_, s)| s.len())
+                                .sum();
                             res.pos = (byte_off + 1) as u32;
                         }
 
@@ -774,16 +766,10 @@ fn recalculate_from_byte_pos(results: &mut [EvalResult], text: &str, line_index:
         
         // Calculate end offset by walking `span` (Unicode code points) from pos_byte_idx.
         let mut end_byte_idx = pos_byte_idx;
-        let mut chars = text[pos_byte_idx.min(text.len())..].chars().peekable();
+        let mut chars = crate::coordinates::RacketCharIndices::new(&text[pos_byte_idx.min(text.len())..]);
         for _ in 0..res.span {
-            if let Some(c) = chars.next() {
-                end_byte_idx += c.len_utf8();
-                // Treat CRLF as a single position increment to match Racket.
-                if c == '\r' && chars.peek() == Some(&'\n') {
-                    if let Some(next_c) = chars.next() {
-                        end_byte_idx += next_c.len_utf8();
-                    }
-                }
+            if let Some((_, s)) = chars.next() {
+                end_byte_idx += s.len();
             } else {
                 break;
             }
@@ -839,15 +825,7 @@ fn shift_results(results: &mut Vec<EvalResult>, old_text: &str, new_text: &str) 
     let inserted_text = &new_text[pivot..new_text.len() - common_suffix_len];
 
     let count_racket_chars = |s: &str| -> usize {
-        let mut count = 0;
-        let mut chars = s.chars().peekable();
-        while let Some(c) = chars.next() {
-            count += 1;
-            if c == '\r' && chars.peek() == Some(&'\n') {
-                chars.next();
-            }
-        }
-        count
+        crate::coordinates::RacketCharIndices::new(s).count()
     };
 
     let char_delta = (count_racket_chars(inserted_text) as i32) - (count_racket_chars(replaced_text) as i32);
@@ -858,15 +836,10 @@ fn shift_results(results: &mut Vec<EvalResult>, old_text: &str, new_text: &str) 
         let pos_idx = res.pos.saturating_sub(1) as usize;
 
         let mut old_end_byte_idx = pos_idx;
-        let mut chars = old_text[pos_idx.min(old_text.len())..].chars().peekable();
+        let mut chars = crate::coordinates::RacketCharIndices::new(&old_text[pos_idx.min(old_text.len())..]);
         for _ in 0..res.span {
-            if let Some(c) = chars.next() {
-                old_end_byte_idx += c.len_utf8();
-                if c == '\r' && chars.peek() == Some(&'\n') {
-                    if let Some(next_c) = chars.next() {
-                        old_end_byte_idx += next_c.len_utf8();
-                    }
-                }
+            if let Some((_, s)) = chars.next() {
+                old_end_byte_idx += s.len();
             } else {
                 break;
             }
