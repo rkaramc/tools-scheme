@@ -317,19 +317,12 @@ impl Server {
             let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
             
             // Heuristic shift for results before we update the document text
-            let texts = if let Some(doc) = state.document_store.get(&uri) {
+            let state_ref = &mut *state;
+            if let Some(doc) = state_ref.document_store.get(&uri) {
                 if let Some(change) = params.content_changes.first() {
-                    Some((doc.text.clone(), change.text.clone()))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            if let Some((old, new)) = texts {
-                if let Some(results) = state.results.get_mut(&uri) {
-                    shift_results(results, &old, &new);
+                    if let Some(results) = state_ref.results.get_mut(&uri) {
+                        shift_results(results, &doc.text, &change.text);
+                    }
                 }
             }
 
@@ -791,8 +784,9 @@ fn shift_results(results: &mut Vec<EvalResult>, old_text: &str, new_text: &str) 
     // TODO: Refactor to optimize - potential performance impact due to string cloning and indexing on each keystroke.
     if results.is_empty() { return; }
 
-    let byte_delta = (new_text.len() as i32) - (old_text.len() as i32);
-    if byte_delta == 0 && old_text == new_text { return; }
+    // let byte_delta = (new_text.len() as i32) - (old_text.len() as i32);
+    // if byte_delta == 0 && old_text == new_text { return; }
+    if old_text == new_text { return; }
 
     // Find the earliest point of divergence (common prefix)
     let mut pivot = old_text.as_bytes().iter()
@@ -833,6 +827,7 @@ fn shift_results(results: &mut Vec<EvalResult>, old_text: &str, new_text: &str) 
 
     let new_idx = crate::coordinates::LineIndex::new(new_text);
 
+    let byte_delta = (new_text.len() as i32) - (old_text.len() as i32);
     for res in results.iter_mut() {
         let pos_idx = res.pos.saturating_sub(1) as usize;
 
