@@ -670,6 +670,28 @@ mod tests {
     }
 
     #[test]
+    fn test_shift_results_inside_expr() {
+        use crate::evaluator::EvalResult;
+
+        let old_text = "(define x 10)";
+        let new_text = "(define x 100)";
+        // Result is for the whole expression.
+        // pos=1 (1-indexed), span=13 chars
+        let mut results = vec![EvalResult {
+            line: 1, col: 0, end_line: 1, end_col: 13, span: 13,
+            pos: 1, result: "10".to_string(), is_error: false, output: "".to_string()
+        }];
+
+        super::shift_results(&mut results, old_text, new_text);
+
+        // Edit happened at index 11 (after '10', inserting '0').
+        // Pos remains 1, but span should increase by 1 to 14.
+        assert_eq!(results[0].pos, 1);
+        assert_eq!(results[0].span, 14);
+        assert_eq!(results[0].end_col, 14);
+    }
+
+    #[test]
     fn test_merge_results() {
         use crate::evaluator::EvalResult;
 
@@ -787,24 +809,76 @@ fn shift_results(results: &mut Vec<EvalResult>, old_text: &str, new_text: &str) 
     if byte_delta == 0 && old_text == new_text { return; }
 
     // Find the earliest point of divergence (common prefix)
-    let common_prefix_len = old_text.as_bytes().iter()
+    let mut pivot = old_text.as_bytes().iter()
         .zip(new_text.as_bytes().iter())
         .take_while(|(a, b)| a == b)
         .count();
 
-    // Pivot: everything occurring strictly after the common prefix is shifted
-    let pivot = common_prefix_len;
-    
-    // We need a fresh LineIndex to re-derive line/col from shifted byte offsets
+    while pivot > 0 && (!old_text.is_char_boundary(pivot) || !new_text.is_char_boundary(pivot)) {
+        pivot -= 1;
+    }
+
+    let mut common_suffix_len = old_text.as_bytes().iter().rev()
+        .zip(new_text.as_bytes().iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    common_suffix_len = common_suffix_len
+        .min(old_text.len() - pivot)
+        .min(new_text.len() - pivot);
+
+    while common_suffix_len > 0 {
+        let old_suffix_start = old_text.len() - common_suffix_len;
+        let new_suffix_start = new_text.len() - common_suffix_len;
+        if old_text.is_char_boundary(old_suffix_start) && new_text.is_char_boundary(new_suffix_start) {
+            break;
+        }
+        common_suffix_len -= 1;
+    }
+
+    let replaced_text = &old_text[pivot..old_text.len() - common_suffix_len];
+    let inserted_text = &new_text[pivot..new_text.len() - common_suffix_len];
+
+    let count_racket_chars = |s: &str| -> usize {
+        let mut count = 0;
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            count += 1;
+            if c == '\r' && chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+        }
+        count
+    };
+
+    let char_delta = (count_racket_chars(inserted_text) as i32) - (count_racket_chars(replaced_text) as i32);
+
     let new_idx = crate::coordinates::LineIndex::new(new_text);
 
     for res in results.iter_mut() {
-        // Racket's res.pos is 1-indexed. Convert to 0-indexed for comparison.
         let pos_idx = res.pos.saturating_sub(1) as usize;
 
-        if pos_idx >= pivot {
-            // Apply byte-level shift
+        let mut old_end_byte_idx = pos_idx;
+        let mut chars = old_text[pos_idx.min(old_text.len())..].chars().peekable();
+        for _ in 0..res.span {
+            if let Some(c) = chars.next() {
+                old_end_byte_idx += c.len_utf8();
+                if c == '\r' && chars.peek() == Some(&'\n') {
+                    if let Some(next_c) = chars.next() {
+                        old_end_byte_idx += next_c.len_utf8();
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+
+        if pivot <= pos_idx {
+            // Edit is before the expression
             res.pos = (res.pos as i32 + byte_delta).max(1) as u32;
+        } else if pivot < old_end_byte_idx {
+            // Edit is inside the expression
+            res.span = (res.span as i32 + char_delta).max(1) as u32;
         }
     }
 

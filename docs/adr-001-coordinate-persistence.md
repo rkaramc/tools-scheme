@@ -86,7 +86,26 @@ By the time results reach the inlay hint generator, they are already normalized 
 ## 4. Handling Selection Offsets
 When a user evaluates a selection, Racket reports coordinates relative to the start of that selection (e.g., Line 1, Col 0). The `eval_worker` in `server.rs` shifts these byte offsets by the selection's start byte before running the normalization. This ensures that even for partial files, the coordinates map back to the correct global position in the editor.
 
-## 5. Sources and References
+## 5. Dynamic Coordinate Shifting on Edits
+
+To maintain performance, the language server attempts to reuse evaluation results when a document changes. The `shift_results` function handles updating the cached `EvalResult` positions based on text edits.
+
+### Delineating Edit Boundaries and Safe UTF-8 Handling
+We isolate the exact edit by calculating both the **longest common prefix** (the `pivot`) and the **longest common suffix** between the old and new text. 
+Because Rust's strings are UTF-8, we must ensure these boundaries do not split multi-byte characters (e.g., emojis). If a calculated boundary falls inside a character, we walk it backward using `.is_char_boundary()` to find a safe seam, preventing panics during text slicing.
+
+### Two-Tier Update Logic
+When an edit occurs, we calculate two deltas:
+- `byte_delta`: The difference in total bytes (used to adjust the start byte `pos`).
+- `char_delta`: The difference in character count (used to adjust the `span`), where `\r\n` is counted as a single character to match Racket.
+
+We then adjust the cached results based on where the edit occurred relative to the expression:
+1. **Edit is before the expression:** The expression's length doesn't change, but it moves. We shift its start `pos` by the `byte_delta`.
+2. **Edit is inside the expression:** The expression's start doesn't move, but its length changes. We keep `pos` the same, but shift its `span` by the `char_delta`.
+
+After these adjustments, `recalculate_from_byte_pos` is called to accurately derive the new LSP (UTF-16) end line and column numbers.
+
+## 6. Sources and References
 
 *   **Racket Documentation**: [Syntax Object Properties](https://docs.racket-lang.org/reference/stxprops.html) - Details on `syntax-line`, `syntax-column`, and `syntax-position`.
 *   **LSP Specification**: [Position](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#position) - Defines the UTF-16 code unit requirement for columns.
