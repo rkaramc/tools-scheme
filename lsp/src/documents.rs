@@ -4,6 +4,8 @@ use url::Url;
 use crate::coordinates::LineIndex;
 use std::io::Write;
 use std::fs::{File, OpenOptions};
+use crate::evaluator::EvalResult;
+use lsp_types::Range;
 
 #[derive(Debug)]
 pub struct Document {
@@ -11,6 +13,8 @@ pub struct Document {
     pub text: String,
     pub line_index: LineIndex,
     pub session_file: Option<File>,
+    pub results: Vec<EvalResult>,
+    pub ranges: Vec<Range>,
 }
 
 pub struct DocumentStore {
@@ -48,6 +52,8 @@ impl DocumentStore {
                 text: item.text,
                 line_index,
                 session_file,
+                results: Vec::new(),
+                ranges: Vec::new(),
             },
         );
     }
@@ -68,5 +74,13 @@ impl DocumentStore {
 
     pub fn get(&self, uri: &str) -> Option<&Document> {
         self.documents.get(uri)
+    }
+
+    pub fn get_mut(&mut self, uri: &str) -> Option<&mut Document> {
+        self.documents.get_mut(uri)
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Document> {
+        self.documents.values_mut()
     }
 }
