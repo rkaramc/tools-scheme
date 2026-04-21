@@ -10,6 +10,38 @@ pub struct LineIndex {
     line_offsets: Vec<usize>,
 }
 
+/// Iterator that yields `(byte_offset, &str)` for each Racket character in a string.
+/// Racket treats CRLF (`\r\n`) as a single character.
+pub struct RacketCharIndices<'a> {
+    text: &'a str,
+    chars: std::iter::Peekable<std::str::CharIndices<'a>>,
+}
+
+impl<'a> RacketCharIndices<'a> {
+    pub fn new(text: &'a str) -> Self {
+        Self {
+            text,
+            chars: text.char_indices().peekable(),
+        }
+    }
+}
+
+impl<'a> Iterator for RacketCharIndices<'a> {
+    type Item = (usize, &'a str);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (idx, c) = self.chars.next()?;
+        let mut end_idx = idx + c.len_utf8();
+
+        if c == '\r' && self.chars.peek().map(|&(_, next_c)| next_c) == Some('\n') {
+            let (next_idx, next_c) = self.chars.next().unwrap();
+            end_idx = next_idx + next_c.len_utf8();
+        }
+        
+        Some((idx, &self.text[idx..end_idx]))
+    }
+}
+
 /// Specifies which unit system a column offset uses.
 pub enum OffsetUnit {
     /// UTF-16 code units (LSP protocol standard).
@@ -48,23 +80,17 @@ impl LineIndex {
         let line_text = &text[line_start..];
 
         let mut col_remaining = col;
-        let mut chars = line_text.char_indices().peekable();
-        while let Some((byte_idx, c)) = chars.next() {
-            if c == '\n' || c == '\r' {
+        let mut chars = RacketCharIndices::new(line_text);
+        while let Some((byte_idx, s)) = chars.next() {
+            if s == "\n" || s == "\r" || s == "\r\n" {
                 return line_start + byte_idx;
             }
             if col_remaining == 0 {
                 return line_start + byte_idx;
             }
             let unit_width = match unit {
-                OffsetUnit::Utf16 => c.len_utf16(),
-                OffsetUnit::CodePoint => {
-                    // Treat CRLF as a single code point for Racket compatibility
-                    if c == '\r' && chars.peek().map(|&(_, next_c)| next_c) == Some('\n') {
-                        let _ = chars.next(); // Consume the '\n'
-                    }
-                    1
-                }
+                OffsetUnit::Utf16 => s.chars().map(|c| c.len_utf16()).sum(),
+                OffsetUnit::CodePoint => 1,
             };
             col_remaining = col_remaining.saturating_sub(unit_width);
         }
@@ -121,17 +147,10 @@ impl LineIndex {
         
         // Find end offset by walking `span` code points
         let mut end_offset = start_offset;
-        let mut chars = text[start_offset..].chars().peekable();
+        let mut chars = RacketCharIndices::new(&text[start_offset..]);
         for _ in 0..span {
-            if let Some(c) = chars.next() {
-                end_offset += c.len_utf8();
-                // If we encounter \r\n, consume the \n part as well but don't count it towards the span budget.
-                // This matches Racket's behavior where CRLF counts as a single position increment.
-                if c == '\r' && chars.peek() == Some(&'\n') {
-                    if let Some(next_c) = chars.next() {
-                        end_offset += next_c.len_utf8();
-                    }
-                }
+            if let Some((_, s)) = chars.next() {
+                end_offset += s.len();
             } else {
                 break;
             }
@@ -275,6 +294,20 @@ mod tests {
         assert_eq!(idx.byte_offset(text, 0, 2, OffsetUnit::Utf16), 6);
         // Code point col 2 → byte 6 (same, since CJK is 1 code unit per code point)
         assert_eq!(idx.byte_offset(text, 0, 2, OffsetUnit::CodePoint), 6);
+    }
+
+    #[test]
+    fn test_racket_char_indices() {
+        let text = "a\r\nb🦀\rc\n";
+        let mut chars = RacketCharIndices::new(text);
+        assert_eq!(chars.next(), Some((0, "a")));
+        assert_eq!(chars.next(), Some((1, "\r\n")));
+        assert_eq!(chars.next(), Some((3, "b")));
+        assert_eq!(chars.next(), Some((4, "🦀")));
+        assert_eq!(chars.next(), Some((8, "\r")));
+        assert_eq!(chars.next(), Some((9, "c")));
+        assert_eq!(chars.next(), Some((10, "\n")));
+        assert_eq!(chars.next(), None);
     }
 
     #[test]
