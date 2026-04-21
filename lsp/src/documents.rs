@@ -52,14 +52,11 @@ impl DocumentStore {
         );
     }
 
-    pub fn change(&mut self, uri: &str, version: i32, changes: Vec<TextDocumentContentChangeEvent>) {
+    pub fn update_text_and_index(&mut self, uri: &str, version: i32, text: String, line_index: LineIndex) {
         if let Some(doc) = self.documents.get_mut(uri) {
             doc.version = version;
-            // Since we currently use FULL sync, the last change contains the full text.
-            if let Some(change) = changes.into_iter().last() {
-                doc.line_index = LineIndex::new(&change.text);
-                doc.text = change.text;
-            }
+            doc.text = text;
+            doc.line_index = line_index;
         }
     }
 
