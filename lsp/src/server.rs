@@ -21,8 +21,6 @@ use crate::coordinates::LineIndex;
 
 /// State shared between the main loop and the eval worker thread. 
 pub struct SharedState {
-    pub results: HashMap<String, Vec<EvalResult>>,
-    pub ranges: HashMap<String, Vec<Range>>,
     pub document_store: DocumentStore,
 }
 
@@ -129,8 +127,9 @@ pub fn eval_worker(
                         // Store results with spatial merging.
                         {
                             let mut lock = state.write().unwrap_or_else(|e| e.into_inner());
-                            let existing = lock.results.entry(uri_str.clone()).or_insert_with(Vec::new);
-                            merge_results(existing, results, byte_range);
+                            if let Some(doc) = lock.document_store.get_mut(&uri_str) {
+                                merge_results(&mut doc.results, results, byte_range);
+                            }
                         }
 
                         // Publish diagnostics.
@@ -197,20 +196,12 @@ pub fn eval_worker(
                         let mut lock = state.write().unwrap_or_else(|e| e.into_inner());
                         let uri_str = task.uri.clone();
 
-                        let lsp_ranges: Vec<Range> = if let Some(doc) = lock.document_store.get(&uri_str) {
-                             results.iter().map(|r| {
+                        if let Some(doc) = lock.document_store.get_mut(&uri_str) {
+                             let lsp_ranges: Vec<Range> = results.iter().map(|r| {
                                 doc.line_index.range_from_span(&doc.text, r.line, r.col, r.span)
-                            }).collect()
-                        } else {
-                            results.iter().map(|r| {
-                                Range::new(
-                                    Position::new(r.line.saturating_sub(1), r.col),
-                                    Position::new(r.end_line.saturating_sub(1), r.end_col),
-                                )
-                            }).collect()
-                        };
-
-                        lock.ranges.insert(uri_str, lsp_ranges);
+                            }).collect();
+                            doc.ranges = lsp_ranges;
+                        }
 
                         // Ask the client to refresh code lenses
                         let refresh_req = Request::new(
@@ -229,7 +220,9 @@ pub fn eval_worker(
                 evaluator.log(&format!("EvalAction::Clear for {}", task.uri));
                 let _ = evaluator.clear_namespace(&task.uri);
                 let mut lock = state.write().unwrap_or_else(|e| e.into_inner());
-                lock.results.remove(&task.uri);
+                if let Some(doc) = lock.document_store.get_mut(&task.uri) {
+                    doc.results.clear();
+                }
 
                 evaluator.log("Namespace cleared, sending refreshes");
                 // Trigger refreshes
@@ -250,8 +243,10 @@ pub fn eval_worker(
                 let _ = evaluator.restart();
                 // Clear all stored results and ranges since they might be invalid now
                 let mut lock = state.write().unwrap_or_else(|e| e.into_inner());
-                lock.results.clear();
-                lock.ranges.clear();
+                for doc in lock.document_store.iter_mut() {
+                    doc.results.clear();
+                    doc.ranges.clear();
+                }
                 
                 // Trigger refreshes
                 let refresh_req = Request::new(
@@ -321,18 +316,12 @@ impl Server {
                 let new_idx = crate::coordinates::LineIndex::new(&new_text);
                 
                 let state_ref = &mut *state;
-                if let Some(doc) = state_ref.document_store.get(&uri) {
-                    if let Some(results) = state_ref.results.get_mut(&uri) {
-                        shift_results(results, &doc.text, &new_text, &new_idx);
-                    }
+                if let Some(doc) = state_ref.document_store.get_mut(&uri) {
+                    shift_results(&mut doc.results, &doc.text, &new_text, &new_idx);
+                    doc.version = params.text_document.version;
+                    doc.text = new_text;
+                    doc.line_index = new_idx;
                 }
-
-                state.document_store.update_text_and_index(
-                    &uri,
-                    params.text_document.version,
-                    new_text,
-                    new_idx,
-                );
 
                 if let Some(doc) = state.document_store.get(&uri) {
                     let version = doc.version;
@@ -346,7 +335,6 @@ impl Server {
             let uri = params.text_document.uri.to_string();
             let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
             state.document_store.close(&uri);
-            state.results.remove(&uri);
             
             // Dispatch cleanup to worker
             let _ = self.eval_tx.send(EvalTask {
@@ -483,12 +471,11 @@ impl Server {
     pub fn handle_inlay_hints(&self, connection: &lsp_server::Connection, id: RequestId, params: InlayHintParams) -> Result<(), Box<dyn Error + Sync + Send>> {
         let uri = params.text_document.uri.to_string();
         let state = self.state.read().unwrap_or_else(|e| e.into_inner());
-        let hints = if let Some(results) = state.results.get(&uri) {
-            let doc = state.document_store.get(&uri);
-            let doc_text = doc.map(|d| d.text.as_str());
-            let line_index = doc.map(|d| &d.line_index);
-            let log_handle = doc.and_then(|d| d.session_file.as_ref());
-            inlay_hints::results_to_hints(results, line_index, doc_text, log_handle)
+        let hints = if let Some(doc) = state.document_store.get(&uri) {
+            let doc_text = Some(doc.text.as_str());
+            let line_index = Some(&doc.line_index);
+            let log_handle = doc.session_file.as_ref();
+            inlay_hints::results_to_hints(&doc.results, line_index, doc_text, log_handle)
         } else {
             Vec::new()
         };
@@ -502,8 +489,8 @@ impl Server {
         let state = self.state.read().unwrap_or_else(|e| e.into_inner());
         let mut lenses = Vec::new();
 
-        if let (Some(doc), Some(ranges)) = (state.document_store.get(&uri_str), state.ranges.get(&uri_str)) {
-            for range in ranges {
+        if let Some(doc) = state.document_store.get(&uri_str) {
+            for range in &doc.ranges {
                 let start_idx = doc.line_index.lsp_position_to_byte(&doc.text, range.start);
                 let end_idx = doc.line_index.lsp_position_to_byte(&doc.text, range.end);
                 // Clamp to text length

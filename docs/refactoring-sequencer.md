@@ -6,7 +6,7 @@ Here is how I would sequence the remaining open issues. I've grouped them into t
 
 *Since we just worked on `shift_results` and `DocumentStore`, we should strike while the iron is hot and finish cleaning up this subsystem.*
 
-- [ ] **`ts-3is` — Refactor SharedState to move results and ranges into DocumentStore**
+- [x] **`ts-3is` — Refactor SharedState to move results and ranges into DocumentStore**
   -   **Why first:** This is a major structural change. It dictates *where* `shift_results` and `results` actually live. Doing this first prevents us from rewriting `shift_results` logic only to have to move it to a different file immediately after.
 
 - [ ] **`ts-f49` — Streamline `shift_results` logic**

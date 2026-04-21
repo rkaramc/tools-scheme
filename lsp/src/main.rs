@@ -53,8 +53,6 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     eprintln!("LSP Initialization: Session log: {}", evaluator.session_path().display());
 
     let state = Arc::new(RwLock::new(SharedState {
-        results: HashMap::new(),
-        ranges: HashMap::new(),
         document_store: DocumentStore::new(),
     }));
 
