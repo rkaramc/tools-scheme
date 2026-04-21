@@ -67,6 +67,13 @@
   (flush-output real-stdout))
 
 (define (get-syntax-end stx)
+  ;; Note: This function provides simplified placeholder coordinates (assuming single-line spans).
+  ;; The Language Server Protocol requires end_line and end_col fields in the JSON payload,
+  ;; but calculating accurate multi-line boundaries and UTF-16 code unit offsets in Racket 
+  ;; is inefficient and complex due to CRLF and emoji handling. 
+  ;; Instead, the Rust-side LSP server (in `server.rs` `recalculate_from_byte_pos`) 
+  ;; completely ignores these values and recalculates `end_line` and `end_col` precisely 
+  ;; using the `span`, `line`, and the raw text buffer.
   (let ([pos (and stx (syntax-position stx))]
         [span (and stx (syntax-span stx))]
         [line (and stx (syntax-line stx))]
