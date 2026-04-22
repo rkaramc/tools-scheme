@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use lsp_types::{TextDocumentItem, TextDocumentContentChangeEvent};
+use lsp_types::TextDocumentItem;
 use url::Url;
 use crate::coordinates::LineIndex;
 use std::io::Write;
