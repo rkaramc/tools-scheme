@@ -7,19 +7,17 @@ use lsp_types::{
     },
     request::{CodeActionRequest, CodeLensRequest, ExecuteCommand, InlayHintRequest}, 
     CodeActionOrCommand, CodeActionParams, CodeLens,
-    CodeLensParams, Command, Diagnostic, DiagnosticSeverity, InlayHintParams,
-    Position, PublishDiagnosticsParams, Range,
+    CodeLensParams, Command, InlayHintParams,
+    Position, Range,
 };
 use serde::Deserialize;
 use serde_json::json;
 use url::Url;
-use std::str::FromStr;
 use std::error::Error;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use crate::documents::DocumentStore;
-use crate::evaluator::{EvalResult, Evaluator};
+use crate::evaluator::{EvalResult};
 use crate::inlay_hints;
-use crate::coordinates::LineIndex;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "command", content = "arguments")]
@@ -41,9 +39,22 @@ enum SelectionRange {
     Legacy { line: u32, character: u32 },
 }
 
-/// State shared between the main loop and the eval worker thread. 
 pub struct SharedState {
     pub document_store: DocumentStore,
+}
+
+pub trait SharedStateExt {
+    fn read_recovered(&'_ self) -> RwLockReadGuard<'_, SharedState>;
+    fn write_recovered(&'_ self) -> RwLockWriteGuard<'_, SharedState>;
+}
+
+impl SharedStateExt for RwLock<SharedState> {
+    fn read_recovered(&'_ self) -> RwLockReadGuard<'_, SharedState> {
+        self.read().unwrap_or_else(|e| e.into_inner())
+    }
+    fn write_recovered(&'_ self) -> RwLockWriteGuard<'_, SharedState> {
+        self.write().unwrap_or_else(|e| e.into_inner())
+    }
 }
 
 use crate::worker::{EvalAction, EvalTask};
@@ -53,6 +64,14 @@ pub struct Server {
 }
 
 impl Server {
+    pub fn read_state(&'_ self) -> RwLockReadGuard<'_, SharedState> {
+        self.state.read_recovered()
+    }
+
+    pub fn write_state(&'_ self) -> RwLockWriteGuard<'_, SharedState> {
+        self.state.write_recovered()
+    }
+
     pub fn main_loop(&mut self, connection: &lsp_server::Connection) -> Result<(), Box<dyn Error + Sync + Send>> {
         for msg in &connection.receiver {
             match msg {
@@ -86,7 +105,7 @@ impl Server {
             .on_sync_mut::<DidOpenTextDocument>(|params| {
                 let uri = params.text_document.uri.to_string();
                 let version = params.text_document.version;
-                self.state.write().unwrap_or_else(|e| e.into_inner()).document_store.open(params.text_document);
+                self.write_state().document_store.open(params.text_document);
                 let _ = self.eval_tx.send(EvalTask {
                     uri,
                     action: EvalAction::Parse { version },
@@ -95,7 +114,7 @@ impl Server {
             })?
             .on_sync_mut::<DidChangeTextDocument>(|params| {
                 let uri = params.text_document.uri.to_string();
-                let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
+                let mut state = self.write_state();
                 
                 if let Some(change) = params.content_changes.into_iter().last() {
                     let new_text = change.text;
@@ -107,13 +126,10 @@ impl Server {
                         doc.version = params.text_document.version;
                         doc.text = new_text;
                         doc.line_index = new_idx;
-                    }
 
-                    if let Some(doc) = state.document_store.get(&uri) {
-                        let version = doc.version;
                         let _ = self.eval_tx.send(EvalTask {
                             uri,
-                            action: EvalAction::Parse { version },
+                            action: EvalAction::Parse { version: doc.version },
                         });
                     }
                 }
@@ -121,7 +137,7 @@ impl Server {
             })?
             .on_sync_mut::<DidCloseTextDocument>(|params| {
                 let uri = params.text_document.uri.to_string();
-                let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
+                let mut state = self.write_state();
                 state.document_store.close(&uri);
                 
                 // Dispatch cleanup to worker
@@ -222,7 +238,7 @@ impl Server {
     }
 
     fn get_document_snapshot(&self, uri_str: &str) -> Result<(Option<String>, Option<i32>), Box<dyn Error + Sync + Send>> {
-        let state = self.state.read().unwrap_or_else(|e| e.into_inner());
+        let state = self.read_state();
         let doc = state.document_store.get(uri_str);
         
         let content = doc.map(|d| d.text.clone())
@@ -242,7 +258,7 @@ impl Server {
 
         match sel {
             SelectionRange::Modern(range) => {
-                let state = self.state.read().unwrap_or_else(|e| e.into_inner());
+                let state = self.read_state();
                 if let Some(doc) = state.document_store.get(uri_str) {
                      let start_byte = doc.line_index.lsp_position_to_byte(&doc.text, range.start);
                      let end_byte = doc.line_index.lsp_position_to_byte(&doc.text, range.end);
@@ -252,7 +268,7 @@ impl Server {
             }
             SelectionRange::Legacy { line, character } => {
                 offset = Some((*line, *character));
-                let state = self.state.read().unwrap_or_else(|e| e.into_inner());
+                let state = self.read_state();
                 if let Some(doc) = state.document_store.get(uri_str) {
                      let start_byte = doc.line_index.lsp_position_to_byte(&doc.text, Position::new(*line, *character));
                      byte_range = Some((start_byte as u32, start_byte as u32));
@@ -264,7 +280,7 @@ impl Server {
 
     pub fn handle_inlay_hints(&self, connection: &lsp_server::Connection, id: RequestId, params: InlayHintParams) -> Result<(), Box<dyn Error + Sync + Send>> {
         let uri = params.text_document.uri.to_string();
-        let state = self.state.read().unwrap_or_else(|e| e.into_inner());
+        let state = self.read_state();
         let hints = if let Some(doc) = state.document_store.get(&uri) {
             let doc_text = Some(doc.text.as_str());
             let line_index = Some(&doc.line_index);
@@ -280,7 +296,7 @@ impl Server {
 
     pub fn handle_code_lens(&self, connection: &lsp_server::Connection, id: RequestId, params: CodeLensParams) -> Result<(), Box<dyn Error + Sync + Send>> {
         let uri_str = params.text_document.uri.to_string();
-        let state = self.state.read().unwrap_or_else(|e| e.into_inner());
+        let state = self.read_state();
         let mut lenses = Vec::new();
 
         if let Some(doc) = state.document_store.get(&uri_str) {
