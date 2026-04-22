@@ -12,7 +12,7 @@ Here is how I would sequence the remaining open issues. I've grouped them into t
 - [x] **`ts-f49` — Streamline `shift_results` logic**
   -   **Why second:** Once `shift_results` is safely encapsulated in `documents.rs` (thanks to step 1), we can confidently optimize its internal logic (removing the redundant $O(N)$ string equality checks) without interfering with `server.rs`.
 
-- [ ] **`ts-j9r` — Support multiple content changes in DidChangeTextDocument**
+- [x] **`ts-j9r` — Support multiple content changes in DidChangeTextDocument**
   -   **Why third:** This is a correctness bug that sits right on the boundary between receiving LSP notifications and updating the `DocumentStore`. With the store fully encapsulated, fixing how we loop through `content_changes` becomes much safer and cleaner.
 
 ## Phase 2: LSP Routing Cleanup
