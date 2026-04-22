@@ -56,9 +56,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         document_store: DocumentStore::new(),
     }));
 
-    // Unbounded channel: dispatch is non-blocking. Stale Parse tasks are
-    // skipped in the worker by checking the current document version.
-    let (eval_tx, eval_rx) = crossbeam_channel::unbounded();
+    // Bounded channel to prevent OOM when user typing triggers many parses.
+    // Stale tasks are handled via version checking or dropping.
+    let (eval_tx, eval_rx) = crossbeam_channel::bounded(10);
 
     // Spawn the eval worker. It owns the Evaluator (and thus the Racket REPL
     // child process) and is the only thread that ever calls into it.
