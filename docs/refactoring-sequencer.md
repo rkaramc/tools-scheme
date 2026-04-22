@@ -2,6 +2,8 @@
 
 Here is how I would sequence the remaining open issues. I've grouped them into three phases based on **context locality** (tackling related files together) and **dependency** (doing structural refactors before micro-optimizations).
 
+**Completed**: All issues addressed on 22-Apr-2026.
+
 ## Phase 1: Document & Coordinate Stability
 
 *Since we just worked on `shift_results` and `DocumentStore`, we should strike while the iron is hot and finish cleaning up this subsystem.*
@@ -32,7 +34,7 @@ Here is how I would sequence the remaining open issues. I've grouped them into t
 - [x] **`ts-xag` — Break down eval_worker match block**
   -   **Why here:** Similar to the main loop, the background worker thread has a monolithic match block that handles parsing and evaluation. Breaking this into smaller functions makes the worker easier to maintain.
 
-- [ ] **`ts-9rw` — Centralize state lock poison recovery**
+- [x] **`ts-9rw` — Centralize state lock poison recovery**
   -   **Why last:** We saw this earlier (`.unwrap_or_else(|e| e.into_inner())`). This boilerplate is scattered everywhere. Once the dispatching is cleaned up (Phase 2) and the worker is refactored (Step 6), extracting this lock recovery into a centralized helper method will be the final polish on the server's state management.
 
 ***

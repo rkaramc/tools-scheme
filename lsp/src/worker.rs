@@ -8,7 +8,7 @@ use lsp_types::{
     notification::{Notification as _, PublishDiagnostics},
     Diagnostic, DiagnosticSeverity, Position, PublishDiagnosticsParams, Range,
 };
-use crate::server::SharedState;
+use crate::server::{SharedState, SharedStateExt};
 use crate::evaluator::{EvalResult, Evaluator};
 use crate::coordinates::LineIndex;
 
@@ -101,7 +101,7 @@ fn on_evaluate(
         .and_then(|u| u.to_file_path().ok())
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
 
-    let log_handle = state.read().unwrap_or_else(|e| e.into_inner())
+    let log_handle = state.read_recovered()
         .document_store.get(uri_str)
         .and_then(|d| d.session_file.as_ref())
         .and_then(|f| f.try_clone().ok());
@@ -132,7 +132,7 @@ fn on_evaluate(
             }
 
             // Normalize coordinates to UTF-16 immediately using syntax-position and span.
-            if let Some(doc) = state.read().unwrap_or_else(|e| e.into_inner()).document_store.get(uri_str) {
+            if let Some(doc) = state.read_recovered().document_store.get(uri_str) {
                 if is_selection {
                     recalculate_from_byte_pos(&mut results, &doc.text, &doc.line_index);
                 } else {
@@ -160,7 +160,7 @@ fn on_evaluate(
 
             // Store results with spatial merging.
             {
-                let mut lock = state.write().unwrap_or_else(|e| e.into_inner());
+                let mut lock = state.write_recovered();
                 if let Some(doc) = lock.document_store.get_mut(uri_str) {
                     merge_results(&mut doc.results, results, byte_range);
                 }
@@ -193,7 +193,7 @@ fn on_parse(
 ) {
     evaluator.log(&format!("EvalAction::Parse(version: {:?}) for {}", version, uri_str));
     let (content, current_version) = {
-        let lock = state.read().unwrap_or_else(|e| e.into_inner());
+        let lock = state.read_recovered();
         if let Some(doc) = lock.document_store.get(uri_str) {
             (Some(doc.text.clone()), Some(doc.version))
         } else {
@@ -210,7 +210,7 @@ fn on_parse(
         let parse_results = evaluator.parse_str(&c, Some(uri_str));
         if let Ok(results) = parse_results {
             evaluator.log(&format!("Parsed {} forms", results.len()));
-            let mut lock = state.write().unwrap_or_else(|e| e.into_inner());
+            let mut lock = state.write_recovered();
 
             if let Some(doc) = lock.document_store.get_mut(uri_str) {
                  let lsp_ranges: Vec<Range> = results.iter().map(|r| {
@@ -235,7 +235,7 @@ fn on_clear(
 ) {
     evaluator.log(&format!("EvalAction::Clear for {}", uri_str));
     let _ = evaluator.clear_namespace(uri_str);
-    let mut lock = state.write().unwrap_or_else(|e| e.into_inner());
+    let mut lock = state.write_recovered();
     if let Some(doc) = lock.document_store.get_mut(uri_str) {
         doc.results.clear();
     }
@@ -253,7 +253,7 @@ fn on_restart(
     sender: &crossbeam_channel::Sender<Message>,
 ) {
     let _ = evaluator.restart();
-    let mut lock = state.write().unwrap_or_else(|e| e.into_inner());
+    let mut lock = state.write_recovered();
     for doc in lock.document_store.iter_mut() {
         doc.results.clear();
         doc.ranges.clear();
