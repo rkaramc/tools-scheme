@@ -2,8 +2,7 @@ use lsp_server::{Message, Request, RequestId, Response};
 use crate::dispatch::{RequestDispatcher, NotificationDispatcher};
 use lsp_types::{
     notification::{
-        DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification,
-        PublishDiagnostics,
+        DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument,
     },
     request::{CodeActionRequest, CodeLensRequest, ExecuteCommand, InlayHintRequest}, 
     CodeActionOrCommand, CodeActionParams, CodeLens,

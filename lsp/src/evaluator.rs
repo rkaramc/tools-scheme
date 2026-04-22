@@ -674,7 +674,6 @@ mod tests {
 
     #[test]
     fn test_validate_racket_path_timeout() {
-        use std::io::Write;
         let code = r#"
             fn main() {
                 std::thread::sleep(std::time::Duration::from_secs(10));
