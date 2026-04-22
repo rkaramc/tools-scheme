@@ -491,12 +491,14 @@ mod tests {
     // Helper to simulate the parsing logic for tests
     fn parse_output(stdout: &[u8]) -> Result<Vec<EvalResult>> {
         let mut results = Vec::new();
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            let line = line?;
-            if let Ok(res) = serde_json::from_str::<EvalResult>(&line) {
+        let mut reader = BufReader::new(stdout);
+        let mut buffer = String::new();
+        
+        while reader.read_line(&mut buffer)? > 0 {
+            if let Ok(res) = serde_json::from_str::<EvalResult>(&buffer) {
                 results.push(res);
             }
+            buffer.clear();
         }
         Ok(results)
     }
