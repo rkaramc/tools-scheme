@@ -29,7 +29,7 @@ Here is how I would sequence the remaining open issues. I've grouped them into t
 ## Phase 3: Concurrency & Worker Cleanup
 *These issues deal with the background evaluation thread and lock safety.*
 
-- [ ] **`ts-xag` — Break down eval_worker match block**
+- [x] **`ts-xag` — Break down eval_worker match block**
   -   **Why here:** Similar to the main loop, the background worker thread has a monolithic match block that handles parsing and evaluation. Breaking this into smaller functions makes the worker easier to maintain.
 
 - [ ] **`ts-9rw` — Centralize state lock poison recovery**

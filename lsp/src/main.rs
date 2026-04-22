@@ -6,7 +6,8 @@ use lsp_types::{
 use std::error::Error;
 use std::sync::{Arc, RwLock};
 
-use scheme_toolbox_lsp::server::{Server, SharedState, eval_worker};
+use scheme_toolbox_lsp::server::{Server, SharedState};
+use scheme_toolbox_lsp::worker::{eval_worker, EvalTask};
 use scheme_toolbox_lsp::documents::DocumentStore;
 use scheme_toolbox_lsp::evaluator::Evaluator;
 
