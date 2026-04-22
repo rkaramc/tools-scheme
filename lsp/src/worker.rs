@@ -81,6 +81,7 @@ pub fn eval_worker(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn on_evaluate(
     evaluator: &mut Evaluator,
     state: &Arc<RwLock<SharedState>>,
@@ -126,7 +127,7 @@ fn on_evaluate(
             if is_selection {
                 let start_byte_off = byte_range.map(|(s, _)| s).unwrap_or(0);
                 for res in &mut results {
-                    res.pos += start_byte_off as u32;
+                    res.pos += start_byte_off;
                 }
             }
 

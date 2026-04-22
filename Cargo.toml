@@ -1,8 +1,13 @@
 [workspace]
 members = [
-    "lsp"
+    "lsp",
 ]
 exclude = [
-    "editors/zed"
+    "editors/zed",
 ]
 resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

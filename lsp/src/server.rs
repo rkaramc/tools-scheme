@@ -229,7 +229,7 @@ impl Server {
     }
 
     fn send_eval_task(&self, id: RequestId, task: EvalTask) -> Message {
-        if let Err(_) = self.eval_tx.send(task) {
+        if self.eval_tx.send(task).is_err() {
             Message::Response(Response::new_err(
                 id,
                 lsp_server::ErrorCode::InternalError as i32,
@@ -254,8 +254,12 @@ impl Server {
         
         Ok((content, version))
     }
+}
 
-    fn get_selection_offsets(&self, uri_str: &str, sel: &SelectionRange) -> (Option<(u32, u32)>, Option<(u32, u32)>) {
+type SelectionOffsets = (Option<(u32, u32)>, Option<(u32, u32)>);
+
+impl Server {
+    fn get_selection_offsets(&self, uri_str: &str, sel: &SelectionRange) -> SelectionOffsets {
         let mut offset = None;
         let mut byte_range = None;
 
@@ -473,7 +477,7 @@ mod tests {
 
 // merge_results, normalize_results, recalculate_from_byte_pos moved to worker.rs
 
-fn shift_results(results: &mut Vec<EvalResult>, old_text: &str, new_text: &str, new_idx: &crate::coordinates::LineIndex) {
+fn shift_results(results: &mut [EvalResult], old_text: &str, new_text: &str, new_idx: &crate::coordinates::LineIndex) {
     if results.is_empty() { return; }
 
     let byte_delta = (new_text.len() as i32) - (old_text.len() as i32);

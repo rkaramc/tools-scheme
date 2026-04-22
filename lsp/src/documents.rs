@@ -21,6 +21,12 @@ pub struct DocumentStore {
     documents: HashMap<String, Document>,
 }
 
+impl Default for DocumentStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DocumentStore {
     pub fn new() -> Self {
         Self {
