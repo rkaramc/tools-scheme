@@ -1,6 +1,5 @@
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::AtomicI32;
-use std::error::Error;
 use std::str::FromStr;
 use url::Url;
 use lsp_server::{Message, Request, RequestId};

@@ -47,7 +47,6 @@ pub enum OffsetUnit {
     /// UTF-16 code units (LSP protocol standard).
     Utf16,
     /// Unicode code points (Racket's `syntax-column`).
-    #[allow(dead_code)]
     CodePoint,
 }
 
