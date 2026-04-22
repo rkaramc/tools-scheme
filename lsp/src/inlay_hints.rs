@@ -11,7 +11,7 @@ pub fn results_to_hints(results: &[EvalResult], _line_index: Option<&LineIndex>,
             
             // Determine the display value
             let display_val = if (res.result == "'void" || res.result == "#<void>") && !res.output.is_empty() {
-                res.output.lines().next().unwrap_or("").trim().to_string()
+                res.output.trim().replace('\n', " ↵ ")
             } else {
                 res.result.clone()
             };
@@ -102,23 +102,21 @@ mod tests {
 
     #[test]
     fn test_results_to_hints_void_with_output() {
-        let results = vec![
-            EvalResult {
-                line: 1,
-                col: 5,
-                end_line: 1,
-                end_col: 6,
-                span: 1,
-                pos: 6,
-                result: "'void".to_string(),
-                is_error: false,
-                output: "hello world\nline 2".to_string(),
-            }
-        ];
+        let results = vec![EvalResult {
+            line: 1,
+            col: 5,
+            end_line: 1,
+            end_col: 10,
+            span: 5,
+            pos: 10,
+            result: "'void".to_string(),
+            is_error: false,
+            output: "hello\nworld".to_string(),
+        }];
         let hints = results_to_hints(&results, None, None, None);
         assert_eq!(hints.len(), 1);
         if let InlayHintLabel::String(label) = &hints[0].label {
-            assert_eq!(label, "  => hello world 📝"); // Shows output instead of 'void', and has extra lines
+            assert_eq!(label, "  => hello ↵ world 📝"); // Shows output collapsed, instead of 'void'
         }
     }
 }
