@@ -3,7 +3,6 @@ use lsp_types::{
     CodeActionKind, CodeActionOptions, ServerCapabilities, TextDocumentSyncCapability,
     TextDocumentSyncKind, WorkDoneProgressOptions, CodeLensOptions,
 };
-use std::collections::HashMap;
 use std::error::Error;
 use std::sync::{Arc, RwLock};
 

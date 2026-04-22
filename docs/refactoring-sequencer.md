@@ -23,6 +23,9 @@ Here is how I would sequence the remaining open issues. I've grouped them into t
 - [x] **`ts-3ad` — Use lsp-server dispatchers for routing**
   -   **Why here:** These two go hand-in-hand. The `lsp-server` crate provides built-in `RequestDispatcher` and `NotificationDispatcher` utilities. Adopting these will eliminate hundreds of lines of `if let Some(...) = cast_request(...)` boilerplate and dramatically shrink the main server loop.
 
+- [ ] **`ts-1p4` — Use enum-based Command Pattern for executeCommand**
+  -   **Why here:** While `ts-3ad` cleaned up the top-level dispatchers, `handle_execute_command` still contains a monolithic `if/else` block and manual JSON indexing for custom Scheme commands. This refactor completes the routing cleanup by introducing a strongly-typed command enum.
+
 ## Phase 3: Concurrency & Worker Cleanup
 *These issues deal with the background evaluation thread and lock safety.*
 
