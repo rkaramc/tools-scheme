@@ -32,8 +32,3 @@ crossbeam-channel = "0.5.15"
 tempfile = "3.27.0"
 fastrand = "2.4.1"
 url = "2.5.8"
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1

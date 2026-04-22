@@ -60,7 +60,7 @@ impl Evaluator {
         let temp_dir = std::env::temp_dir().join(TEMP_SUBDIR);
         std::fs::create_dir_all(&temp_dir)?;
 
-        let random_suffix: String = std::iter::repeat_with(|| fastrand::lowercase()).take(8).collect();
+        let random_suffix: String = std::iter::repeat_with(fastrand::lowercase).take(8).collect();
         let session_name = format!("global-{}.session", random_suffix);
         let global_session_path = temp_dir.join(session_name);
 
@@ -95,7 +95,7 @@ impl Evaluator {
 
         Ok(Self {
             state: Some(state),
-            shim_file: shim_file,
+            shim_file,
             timeout,
             global_session,
             _global_session_path:global_session_path,
