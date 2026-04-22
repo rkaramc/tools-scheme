@@ -23,7 +23,7 @@ fn test_lsp_eval_integration() {
             Some(b) => b,
             None => break,
         };
-        if body.contains("\"id\":2") {
+        if body.contains("\"id\":2") && body.contains("\"result\"") {
             assert!(body.contains("\"result\":null"), "Expected null ack, got: {}", body);
             found_ack = true;
         }
@@ -52,7 +52,7 @@ fn test_lsp_eval_integration() {
             Some(b) => b,
             None => break,
         };
-        if body.contains("\"id\":3") {
+        if body.contains("\"id\":3") && body.contains("\"result\"") {
             assert!(body.contains("\"result\":null"), "Expected null ack, got: {}", body);
             found_lang_ack = true;
         }

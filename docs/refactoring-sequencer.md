@@ -20,7 +20,7 @@ Here is how I would sequence the remaining open issues. I've grouped them into t
 
 - [x] **`ts-8f9` — Abstract boilerplate LSP message dispatching**
 
-- [ ] **`ts-3ad` — Use lsp-server dispatchers for routing**
+- [x] **`ts-3ad` — Use lsp-server dispatchers for routing**
   -   **Why here:** These two go hand-in-hand. The `lsp-server` crate provides built-in `RequestDispatcher` and `NotificationDispatcher` utilities. Adopting these will eliminate hundreds of lines of `if let Some(...) = cast_request(...)` boilerplate and dramatically shrink the main server loop.
 
 ## Phase 3: Concurrency & Worker Cleanup
