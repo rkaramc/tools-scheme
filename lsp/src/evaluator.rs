@@ -226,7 +226,9 @@ impl Evaluator {
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("Failed to open stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("Failed to open stdout"))?;
         
-        let (tx, rx) = crossbeam_channel::unbounded();
+        // Bounded channel for REPL stdout to prevent memory explosion if REPL
+        // sends huge amounts of data. The worker thread reads this via recv_timeout.
+        let (tx, rx) = crossbeam_channel::bounded(100);
         
         // Background reader thread
         std::thread::spawn(move || {

@@ -106,10 +106,12 @@ impl Server {
                 let uri = params.text_document.uri.to_string();
                 let version = params.text_document.version;
                 self.write_state().document_store.open(params.text_document);
-                let _ = self.eval_tx.send(EvalTask {
+                if let Err(e) = self.eval_tx.try_send(EvalTask {
                     uri,
                     action: EvalAction::Parse { version },
-                });
+                }) {
+                    eprintln!("eval_tx channel full, dropping parse task: {}", e);
+                }
                 Ok(())
             })?
             .on_sync_mut::<DidChangeTextDocument>(|params| {
@@ -141,10 +143,12 @@ impl Server {
                 state.document_store.close(&uri);
                 
                 // Dispatch cleanup to worker
-                let _ = self.eval_tx.send(EvalTask {
+                if let Err(e) = self.eval_tx.try_send(EvalTask {
                     uri,
                     action: EvalAction::Clear,
-                });
+                }) {
+                    eprintln!("eval_tx channel full, dropping Clear task: {}", e);
+                }
                 Ok(())
             })?
             .finish();
