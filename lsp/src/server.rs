@@ -42,6 +42,34 @@ pub struct Server {
     pub state: Arc<RwLock<SharedState>>,
 }
 
+static NEXT_REQ_ID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
+
+pub trait MessageSender {
+    fn send_diagnostics(&self, uri: lsp_types::Uri, diagnostics: Vec<Diagnostic>, version: Option<i32>);
+    fn refresh_inlay_hints(&self);
+    fn refresh_code_lenses(&self);
+}
+
+impl MessageSender for crossbeam_channel::Sender<Message> {
+    fn send_diagnostics(&self, uri: lsp_types::Uri, diagnostics: Vec<Diagnostic>, version: Option<i32>) {
+        let diag_params = PublishDiagnosticsParams { uri, diagnostics, version };
+        let not = lsp_server::Notification::new(PublishDiagnostics::METHOD.to_string(), diag_params);
+        let _ = self.send(Message::Notification(not));
+    }
+
+    fn refresh_inlay_hints(&self) {
+        let id = NEXT_REQ_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let req = Request::new(RequestId::from(id), "workspace/inlayHint/refresh".to_string(), json!(null));
+        let _ = self.send(Message::Request(req));
+    }
+
+    fn refresh_code_lenses(&self) {
+        let id = NEXT_REQ_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let req = Request::new(RequestId::from(id), "workspace/codeLens/refresh".to_string(), json!(null));
+        let _ = self.send(Message::Request(req));
+    }
+}
+
 /// Background thread: receives EvalTask, evaluates, updates SharedState, sends notifications.
 pub fn eval_worker(
     mut evaluator: Evaluator,
@@ -133,42 +161,20 @@ pub fn eval_worker(
                         }
 
                         // Publish diagnostics.
-                        let diag_params = PublishDiagnosticsParams {
-                            uri: uri.clone(),
-                            diagnostics,
-                            version,
-                        };
-                        let not = lsp_server::Notification::new(
-                            PublishDiagnostics::METHOD.to_string(),
-                            diag_params,
-                        );
-                        let _ = sender.send(Message::Notification(not));
+                        sender.send_diagnostics(uri.clone(), diagnostics, version);
 
                         // Ask the client to refresh inlay hints.
-                        let refresh_req = Request::new(
-                            RequestId::from(999),
-                            "workspace/inlayHint/refresh".to_string(),
-                            json!(null),
-                        );
-                        let _ = sender.send(Message::Request(refresh_req));
+                        sender.refresh_inlay_hints();
                     }
                     Err(e) => {
                         // Send an error notification via diagnostics so the user sees it.
-                        let diag_params = PublishDiagnosticsParams {
-                            uri,
-                            diagnostics: vec![Diagnostic {
-                                range: Range::new(Position::new(0, 0), Position::new(0, 0)),
-                                severity: Some(DiagnosticSeverity::ERROR),
-                                message: format!("Evaluation error: {}", e),
-                                ..Default::default()
-                            }],
-                            version,
-                        };
-                        let not = lsp_server::Notification::new(
-                            PublishDiagnostics::METHOD.to_string(),
-                            diag_params,
-                        );
-                        let _ = sender.send(Message::Notification(not));
+                        let diagnostics = vec![Diagnostic {
+                            range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+                            severity: Some(DiagnosticSeverity::ERROR),
+                            message: format!("Evaluation error: {}", e),
+                            ..Default::default()
+                        }];
+                        sender.send_diagnostics(uri, diagnostics, version);
                     }
                 }
             }
@@ -204,12 +210,7 @@ pub fn eval_worker(
                         }
 
                         // Ask the client to refresh code lenses
-                        let refresh_req = Request::new(
-                            RequestId::from(998),
-                            "workspace/codeLens/refresh".to_string(),
-                            json!(null),
-                        );
-                        let _ = sender.send(Message::Request(refresh_req));
+                        sender.refresh_code_lenses();
                         evaluator.log("Sent codeLens/refresh");
                     } else if let Err(e) = parse_results {
                         evaluator.log(&format!("Parse error: {}", e));
@@ -226,18 +227,8 @@ pub fn eval_worker(
 
                 evaluator.log("Namespace cleared, sending refreshes");
                 // Trigger refreshes
-                let refresh_req = Request::new(
-                    RequestId::from(1000),
-                    "workspace/inlayHint/refresh".to_string(),
-                    json!(null),
-                );
-                let _ = sender.send(Message::Request(refresh_req));
-                let lens_refresh = Request::new(
-                    RequestId::from(1001),
-                    "workspace/codeLens/refresh".to_string(),
-                    json!(null),
-                );
-                let _ = sender.send(Message::Request(lens_refresh));
+                sender.refresh_inlay_hints();
+                sender.refresh_code_lenses();
             }
             EvalAction::Restart => {
                 let _ = evaluator.restart();
@@ -249,18 +240,8 @@ pub fn eval_worker(
                 }
                 
                 // Trigger refreshes
-                let refresh_req = Request::new(
-                    RequestId::from(1000),
-                    "workspace/inlayHint/refresh".to_string(),
-                    json!(null),
-                );
-                let _ = sender.send(Message::Request(refresh_req));
-                let lens_refresh = Request::new(
-                    RequestId::from(1001),
-                    "workspace/codeLens/refresh".to_string(),
-                    json!(null),
-                );
-                let _ = sender.send(Message::Request(lens_refresh));
+                sender.refresh_inlay_hints();
+                sender.refresh_code_lenses();
             }
         }
     }
