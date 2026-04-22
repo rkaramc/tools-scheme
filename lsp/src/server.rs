@@ -43,16 +43,16 @@ pub struct SharedState {
     pub document_store: DocumentStore,
 }
 
-pub trait SharedStateExt {
-    fn read_recovered(&'_ self) -> RwLockReadGuard<'_, SharedState>;
-    fn write_recovered(&'_ self) -> RwLockWriteGuard<'_, SharedState>;
+pub trait RwLockExt<T> {
+    fn read_recovered(&self) -> RwLockReadGuard<'_, T>;
+    fn write_recovered(&self) -> RwLockWriteGuard<'_, T>;
 }
 
-impl SharedStateExt for RwLock<SharedState> {
-    fn read_recovered(&'_ self) -> RwLockReadGuard<'_, SharedState> {
+impl<T> RwLockExt<T> for RwLock<T> {
+    fn read_recovered(&self) -> RwLockReadGuard<'_, T> {
         self.read().unwrap_or_else(|e| e.into_inner())
     }
-    fn write_recovered(&'_ self) -> RwLockWriteGuard<'_, SharedState> {
+    fn write_recovered(&self) -> RwLockWriteGuard<'_, T> {
         self.write().unwrap_or_else(|e| e.into_inner())
     }
 }
@@ -341,6 +341,7 @@ impl Server {
 mod tests {
     use std::sync::{Arc, RwLock};
     use std::thread;
+    use super::RwLockExt;
 
     #[test]
     fn test_sender_non_blocking() {
@@ -370,11 +371,11 @@ mod tests {
         assert!(state.is_poisoned());
 
         // This should not panic after our fix
-        let mut lock = state.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut lock = state.write_recovered();
         *lock = 2;
         drop(lock);
 
-        let read_lock = state.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let read_lock = state.read_recovered();
         assert_eq!(*read_lock, 2);
     }
 

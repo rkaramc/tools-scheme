@@ -8,7 +8,7 @@ use lsp_types::{
     notification::{Notification as _, PublishDiagnostics},
     Diagnostic, DiagnosticSeverity, Position, PublishDiagnosticsParams, Range,
 };
-use crate::server::{SharedState, SharedStateExt};
+use crate::server::{SharedState, RwLockExt};
 use crate::evaluator::{EvalResult, Evaluator};
 use crate::coordinates::LineIndex;
 
