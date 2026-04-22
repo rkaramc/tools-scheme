@@ -10,6 +10,7 @@ use lsp_types::{
     CodeLensParams, Command, Diagnostic, DiagnosticSeverity, InlayHintParams,
     Position, PublishDiagnosticsParams, Range,
 };
+use serde::Deserialize;
 use serde_json::json;
 use url::Url;
 use std::str::FromStr;
@@ -19,6 +20,26 @@ use crate::documents::DocumentStore;
 use crate::evaluator::{EvalResult, Evaluator};
 use crate::inlay_hints;
 use crate::coordinates::LineIndex;
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "command", content = "arguments")]
+enum SchemeCommand {
+    #[serde(rename = "scheme.evaluate")]
+    Evaluate((String,)),
+    #[serde(rename = "scheme.evaluateSelection")]
+    EvaluateSelection((String, String, SelectionRange)),
+    #[serde(rename = "scheme.clearNamespace")]
+    ClearNamespace((String,)),
+    #[serde(rename = "scheme.restartREPL")]
+    RestartREPL,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum SelectionRange {
+    Modern(Range),
+    Legacy { line: u32, character: u32 },
+}
 
 /// State shared between the main loop and the eval worker thread. 
 pub struct SharedState {
@@ -346,112 +367,116 @@ impl Server {
     }
 
     pub fn handle_execute_command(&mut self, connection: &lsp_server::Connection, id: RequestId, params: lsp_types::ExecuteCommandParams) -> Result<(), Box<dyn Error + Sync + Send>> {
-        if params.command == "scheme.restartREPL" {
-            let _ = self.eval_tx.send(EvalTask {
-                uri: "".to_string(),
-                action: EvalAction::Restart,
-            });
-            let resp = Response::new_ok(id, json!(null));
-            connection.sender.send(Message::Response(resp))?;
-            return Ok(());
-        }
-
-        if params.command == "scheme.clearNamespace" {
-            let uri_str = params.arguments.get(0).and_then(|v| v.as_str()).ok_or("Missing URI argument")?.to_string();
-            let _ = self.eval_tx.send(EvalTask {
-                uri: uri_str,
-                action: EvalAction::Clear,
-            });
-            let resp = Response::new_ok(id, json!(null));
-            connection.sender.send(Message::Response(resp))?;
-            return Ok(());
-        }
-
-        let uri_str = match (params.command.as_str(), params.arguments.first().and_then(|a| a.as_str())) {
-            ("scheme.evaluate" | "scheme.evaluateSelection", Some(u)) => u,
-            _ => {
-                let resp = Response::new_ok(id, json!(null));
-                connection.sender.send(Message::Response(resp))?;
+        let cmd: SchemeCommand = match serde_json::from_value(json!(params)) {
+            Ok(c) => c,
+            Err(_) => {
+                // Not one of our commands, acknowledge and return
+                connection.sender.send(Message::Response(Response::new_ok(id, json!(null))))?;
                 return Ok(());
             }
         };
 
-        let uri_str = uri_str.to_string();
-        let uri = Url::parse(&uri_str)?;
-
-        // Snapshot the content and version to evaluate at dispatch time.
-        let (content_snapshot, version_snapshot, offset, byte_range) = if params.command == "scheme.evaluateSelection" {
-            let content = params.arguments.get(1)
-                .and_then(|a| a.as_str())
-                .map(|s| s.to_string());
-            
-            let mut offset = None;
-            let mut byte_range = None;
-
-            if let Some(arg2) = params.arguments.get(2) {
-                if let Ok(range) = serde_json::from_value::<Range>(arg2.clone()) {
-                    // It's a full Range object (LSP)
-                    let state = self.state.read().unwrap_or_else(|e| e.into_inner());
-                    if let Some(doc) = state.document_store.get(&uri_str) {
-                         let start_byte = doc.line_index.lsp_position_to_byte(&doc.text, range.start);
-                         let end_byte = doc.line_index.lsp_position_to_byte(&doc.text, range.end);
-                         offset = Some((range.start.line, range.start.character));
-                         byte_range = Some((start_byte as u32, end_byte as u32));
-                    }
-                } else if let Some(o) = arg2.as_object() {
-                    // Legacy {line, character} object
-                    let line = o.get("line").and_then(|v| v.as_u64()).map(|v| v as u32);
-                    let character = o.get("character").and_then(|v| v.as_u64()).map(|v| v as u32);
-                    if let (Some(l), Some(c)) = (line, character) {
-                         offset = Some((l, c));
-                         let state = self.state.read().unwrap_or_else(|e| e.into_inner());
-                         if let Some(doc) = state.document_store.get(&uri_str) {
-                              let start_byte = doc.line_index.lsp_position_to_byte(&doc.text, Position::new(l, c));
-                              // We don't have an end offset for legacy objects, so just use start for both, 
-                              // or just start_byte since only start_byte_off is used for res.pos shifting anyway
-                              byte_range = Some((start_byte as u32, start_byte as u32));
-                         }
-                    }
+        let msg_response = match cmd {
+            SchemeCommand::RestartREPL => {
+                self.send_eval_task(id, EvalTask { uri: "".into(), action: EvalAction::Restart })
+            }
+            SchemeCommand::ClearNamespace((uri,)) => {
+                self.send_eval_task(id, EvalTask { uri, action: EvalAction::Clear })
+            }
+            SchemeCommand::Evaluate((uri_str,)) => {
+                let (content, version) = self.get_document_snapshot(&uri_str)?;
+                
+                if let Some(content) = content {
+                    self.send_eval_task(id.clone(), EvalTask {
+                        uri: uri_str,
+                        action: EvalAction::Evaluate {
+                            content,
+                            request_id: id,
+                            version,
+                            offset: None,
+                            byte_range: None,
+                        },
+                    })
+                } else {
+                    Message::Response(Response::new_err(
+                        id,
+                        lsp_server::ErrorCode::InvalidParams as i32,
+                        "Could not find file or buffer content".into(),
+                    ))
                 }
             }
-            (content, None, offset, byte_range)
-        } else {
-            let state = self.state.read().unwrap_or_else(|e| e.into_inner());
-            let doc = state.document_store.get(&uri_str);
-            let content = doc.map(|d| d.text.clone())
-                .or_else(|| uri.to_file_path().ok()
-                    .and_then(|p| std::fs::read_to_string(p).ok()));
-            (content, doc.map(|d| d.version), None, None)
-        };
+            SchemeCommand::EvaluateSelection((uri_str, content, sel)) => {
+                let (offset, byte_range) = self.get_selection_offsets(&uri_str, &sel);
 
-        match content_snapshot {
-            Some(content) => {
-                // Dispatch to worker. Returns immediately.
-                let _ = self.eval_tx.send(EvalTask {
+                self.send_eval_task(id.clone(), EvalTask {
                     uri: uri_str,
                     action: EvalAction::Evaluate {
                         content,
-                        request_id: id.clone(),
-                        version: version_snapshot,
+                        request_id: id,
+                        version: None,
                         offset,
                         byte_range,
                     },
-                });
-
-                // Acknowledge the request immediately.
-                let resp = Response::new_ok(id, json!(null));
-                connection.sender.send(Message::Response(resp))?;
+                })
             }
-            None => {
-                let resp = Response::new_err(
-                    id,
-                    lsp_server::ErrorCode::InvalidParams as i32,
-                    "Could not find file or buffer content".to_string(),
-                );
-                connection.sender.send(Message::Response(resp))?;
+        };
+
+        // Acknowledge all commands
+        connection.sender.send(msg_response)?;
+        Ok(())
+    }
+
+    fn send_eval_task(&self, id: RequestId, task: EvalTask) -> Message {
+        if let Err(_) = self.eval_tx.send(task) {
+            Message::Response(Response::new_err(
+                id,
+                lsp_server::ErrorCode::InternalError as i32,
+                "Evaluation worker disconnected".into(),
+            ))
+        } else {
+            Message::Response(Response::new_ok(id, json!(null)))
+        }
+    }
+
+    fn get_document_snapshot(&self, uri_str: &str) -> Result<(Option<String>, Option<i32>), Box<dyn Error + Sync + Send>> {
+        let state = self.state.read().unwrap_or_else(|e| e.into_inner());
+        let doc = state.document_store.get(uri_str);
+        
+        let content = doc.map(|d| d.text.clone())
+            .or_else(|| {
+                Url::parse(uri_str).ok()
+                    .and_then(|u| u.to_file_path().ok())
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+            });
+        let version = doc.map(|d| d.version);
+        
+        Ok((content, version))
+    }
+
+    fn get_selection_offsets(&self, uri_str: &str, sel: &SelectionRange) -> (Option<(u32, u32)>, Option<(u32, u32)>) {
+        let mut offset = None;
+        let mut byte_range = None;
+
+        match sel {
+            SelectionRange::Modern(range) => {
+                let state = self.state.read().unwrap_or_else(|e| e.into_inner());
+                if let Some(doc) = state.document_store.get(uri_str) {
+                     let start_byte = doc.line_index.lsp_position_to_byte(&doc.text, range.start);
+                     let end_byte = doc.line_index.lsp_position_to_byte(&doc.text, range.end);
+                     offset = Some((range.start.line, range.start.character));
+                     byte_range = Some((start_byte as u32, end_byte as u32));
+                }
+            }
+            SelectionRange::Legacy { line, character } => {
+                offset = Some((*line, *character));
+                let state = self.state.read().unwrap_or_else(|e| e.into_inner());
+                if let Some(doc) = state.document_store.get(uri_str) {
+                     let start_byte = doc.line_index.lsp_position_to_byte(&doc.text, Position::new(*line, *character));
+                     byte_range = Some((start_byte as u32, start_byte as u32));
+                }
             }
         }
-        Ok(())
+        (offset, byte_range)
     }
 
     pub fn handle_inlay_hints(&self, connection: &lsp_server::Connection, id: RequestId, params: InlayHintParams) -> Result<(), Box<dyn Error + Sync + Send>> {
