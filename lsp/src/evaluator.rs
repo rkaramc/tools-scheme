@@ -135,9 +135,8 @@ impl Evaluator {
         
         let has_separator = path.contains('/') || path.contains('\\');
         
-        let output = if !has_separator {
-            // Assume it's a binary in the PATH
-            Command::new(path).arg("--version").output()
+        let mut cmd = if !has_separator {
+            Command::new(path)
         } else {
             let p = Path::new(path);
             if !p.exists() {
@@ -146,36 +145,73 @@ impl Evaluator {
             if !p.is_file() {
                 return Err(anyhow!("Racket path is not a file: {}", path));
             }
-            Command::new(path).arg("--version").output()
+            Command::new(path)
         };
 
-        match output {
-            Ok(out) => {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                
-                writeln!(session_file, "Racket --version status: {}", out.status)?;
-                writeln!(session_file, "Racket --version stdout: {}", stdout.trim())?;
-                if !stderr.is_empty() {
-                    writeln!(session_file, "Racket --version stderr: {}", stderr.trim())?;
-                }
+        let child_res = cmd.arg("--version")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdin(Stdio::null())
+            .spawn();
 
-                if !out.status.success() {
-                    return Err(anyhow!("Racket binary at {} failed with exit code {}. Stderr: {}", path, out.status, stderr.trim()));
-                }
-
-                if !stdout.contains("Racket") && !stderr.contains("Racket") {
-                    return Err(anyhow!("Binary at {} does not appear to be Racket. Output: {}", path, stdout.trim()));
-                }
-
-                writeln!(session_file, "Racket path validation successful.")?;
-                Ok(())
-            }
+        let mut child = match child_res {
+            Ok(c) => c,
             Err(e) => {
                 writeln!(session_file, "Failed to execute Racket binary: {}", e)?;
-                Err(anyhow!("Failed to execute Racket binary at {}: {}", path, e))
+                return Err(anyhow!("Failed to execute Racket binary at {}: {}", path, e));
             }
+        };
+
+        let mut stdout_pipe = child.stdout.take().unwrap();
+        let mut stderr_pipe = child.stderr.take().unwrap();
+        
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let _ = stdout_pipe.read_to_end(&mut out);
+            let _ = stderr_pipe.read_to_end(&mut err);
+            let _ = tx.send((out, err));
+        });
+
+        let start = std::time::Instant::now();
+        let mut status = None;
+        while start.elapsed() < Duration::from_secs(3) {
+            if let Ok(Some(s)) = child.try_wait() {
+                status = Some(s);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
+
+        if status.is_none() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(anyhow!("Validation timed out waiting for Racket binary at {}", path));
+        }
+
+        let status = status.unwrap();
+        let (stdout_bytes, stderr_bytes) = rx.recv_timeout(Duration::from_secs(1)).unwrap_or_default();
+        let stdout = String::from_utf8_lossy(&stdout_bytes);
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
+                
+        writeln!(session_file, "Racket --version status: {}", status)?;
+        writeln!(session_file, "Racket --version stdout: {}", stdout.trim())?;
+        if !stderr.is_empty() {
+            writeln!(session_file, "Racket --version stderr: {}", stderr.trim())?;
+        }
+
+        if !status.success() {
+            return Err(anyhow!("Racket binary at {} failed with exit code {}. Stderr: {}", path, status, stderr.trim()));
+        }
+
+        if !stdout.contains("Racket") && !stderr.contains("Racket") {
+            return Err(anyhow!("Binary at {} does not appear to be Racket. Output: {}", path, stdout.trim()));
+        }
+
+        writeln!(session_file, "Racket path validation successful.")?;
+        Ok(())
     }
 
     fn spawn_process(racket_path: &str, shim_path: &Path, session_file: &File) -> Result<ProcessState> {
@@ -628,6 +664,42 @@ mod tests {
                 assert!(err.contains("does not appear to be Racket") || 
                         err.contains("failed with exit code") ||
                         err.contains("Failed to execute Racket binary"));
+            }
+        }
+    }
+
+    #[test]
+    fn test_validate_racket_path_timeout() {
+        use std::io::Write;
+        let code = r#"
+            fn main() {
+                std::thread::sleep(std::time::Duration::from_secs(10));
+            }
+        "#;
+        let mut path = std::env::temp_dir();
+        path.push("dummy_racket.rs");
+        std::fs::write(&path, code).unwrap();
+        
+        let exe_path = path.with_extension(std::env::consts::EXE_EXTENSION);
+        let status = std::process::Command::new("rustc")
+            .arg(&path)
+            .arg("-o")
+            .arg(&exe_path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "Failed to compile dummy_racket.rs");
+
+        let start = std::time::Instant::now();
+        let res = Evaluator::new(Some(exe_path.to_string_lossy().to_string()));
+        let duration = start.elapsed();
+        
+        match res {
+            Ok(_) => panic!("Evaluator should fail when validation binary hangs"),
+            Err(e) => {
+                let err = e.to_string();
+                println!("ACTUAL TIMEOUT ERROR: {}", err);
+                assert!(err.contains("timed out"), "Error should mention timeout: {}", err);
+                assert!(duration.as_secs() < 10, "Validation should timeout quickly, not hang");
             }
         }
     }
