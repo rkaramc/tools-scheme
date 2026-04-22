@@ -1,4 +1,5 @@
 use lsp_server::{Message, Request, RequestId, Response};
+use crate::dispatch::{RequestDispatcher, NotificationDispatcher};
 use lsp_types::{
     notification::{
         DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification,
@@ -11,7 +12,7 @@ use lsp_types::{
 };
 use serde_json::json;
 use url::Url;
-use std::{collections::HashMap, str::FromStr};
+use std::str::FromStr;
 use std::error::Error;
 use std::sync::{Arc, RwLock};
 use crate::documents::DocumentStore;
@@ -267,62 +268,66 @@ impl Server {
     }
 
     pub fn handle_request(&mut self, connection: &lsp_server::Connection, req: Request) -> Result<(), Box<dyn Error + Sync + Send>> {
-        if let Some(params) = cast_request::<CodeActionRequest>(&req) {
-            self.handle_code_action(connection, req.id, params)?;
-        } else if let Some(params) = cast_request::<ExecuteCommand>(&req) {
-            self.handle_execute_command(connection, req.id, params)?;
-        } else if let Some(params) = cast_request::<InlayHintRequest>(&req) {
-            self.handle_inlay_hints(connection, req.id, params)?;
-        } else if let Some(params) = cast_request::<CodeLensRequest>(&req) {
-            self.handle_code_lens(connection, req.id, params)?;
-        }
+        let _req = RequestDispatcher::new(req)
+            .on_sync_mut::<CodeActionRequest>(|id, params| self.handle_code_action(connection, id, params))?
+            .on_sync_mut::<ExecuteCommand>(|id, params| self.handle_execute_command(connection, id, params))?
+            .on_sync_mut::<InlayHintRequest>(|id, params| self.handle_inlay_hints(connection, id, params))?
+            .on_sync_mut::<CodeLensRequest>(|id, params| self.handle_code_lens(connection, id, params))?
+            .finish();
         Ok(())
     }
 
     pub fn handle_notification(&mut self, not: lsp_server::Notification) -> Result<(), Box<dyn Error + Sync + Send>> {
-        if let Some(params) = cast_notification::<DidOpenTextDocument>(&not) {
-            let uri = params.text_document.uri.to_string();
-            let version = params.text_document.version;
-            self.state.write().unwrap_or_else(|e| e.into_inner()).document_store.open(params.text_document);
-            let _ = self.eval_tx.send(EvalTask {
-                uri,
-                action: EvalAction::Parse { version },
-            });
-        } else if let Some(params) = cast_notification::<DidChangeTextDocument>(&not) {
-            let uri = params.text_document.uri.to_string();
-            let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
-            
-            if let Some(change) = params.content_changes.into_iter().last() {
-                let new_text = change.text;
-                let new_idx = crate::coordinates::LineIndex::new(&new_text);
+        let _not = NotificationDispatcher::new(not)
+            .on_sync_mut::<DidOpenTextDocument>(|params| {
+                let uri = params.text_document.uri.to_string();
+                let version = params.text_document.version;
+                self.state.write().unwrap_or_else(|e| e.into_inner()).document_store.open(params.text_document);
+                let _ = self.eval_tx.send(EvalTask {
+                    uri,
+                    action: EvalAction::Parse { version },
+                });
+                Ok(())
+            })?
+            .on_sync_mut::<DidChangeTextDocument>(|params| {
+                let uri = params.text_document.uri.to_string();
+                let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
                 
-                let state_ref = &mut *state;
-                if let Some(doc) = state_ref.document_store.get_mut(&uri) {
-                    shift_results(&mut doc.results, &doc.text, &new_text, &new_idx);
-                    doc.version = params.text_document.version;
-                    doc.text = new_text;
-                    doc.line_index = new_idx;
-                }
+                if let Some(change) = params.content_changes.into_iter().last() {
+                    let new_text = change.text;
+                    let new_idx = crate::coordinates::LineIndex::new(&new_text);
+                    
+                    let state_ref = &mut *state;
+                    if let Some(doc) = state_ref.document_store.get_mut(&uri) {
+                        shift_results(&mut doc.results, &doc.text, &new_text, &new_idx);
+                        doc.version = params.text_document.version;
+                        doc.text = new_text;
+                        doc.line_index = new_idx;
+                    }
 
-                if let Some(doc) = state.document_store.get(&uri) {
-                    let version = doc.version;
-                    let _ = self.eval_tx.send(EvalTask {
-                        uri,
-                        action: EvalAction::Parse { version },
-                    });
+                    if let Some(doc) = state.document_store.get(&uri) {
+                        let version = doc.version;
+                        let _ = self.eval_tx.send(EvalTask {
+                            uri,
+                            action: EvalAction::Parse { version },
+                        });
+                    }
                 }
-            }
-        } else if let Some(params) = cast_notification::<DidCloseTextDocument>(&not) {
-            let uri = params.text_document.uri.to_string();
-            let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
-            state.document_store.close(&uri);
-            
-            // Dispatch cleanup to worker
-            let _ = self.eval_tx.send(EvalTask {
-                uri,
-                action: EvalAction::Clear,
-            });
-        }
+                Ok(())
+            })?
+            .on_sync_mut::<DidCloseTextDocument>(|params| {
+                let uri = params.text_document.uri.to_string();
+                let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
+                state.document_store.close(&uri);
+                
+                // Dispatch cleanup to worker
+                let _ = self.eval_tx.send(EvalTask {
+                    uri,
+                    action: EvalAction::Clear,
+                });
+                Ok(())
+            })?
+            .finish();
         Ok(())
     }
 
@@ -503,21 +508,6 @@ impl Server {
     }
 }
 
-pub fn cast_request<R>(req: &Request) -> Option<R::Params>
-where
-    R: lsp_types::request::Request,
-    R::Params: serde::de::DeserializeOwned,
-{
-    (req.method == R::METHOD).then(|| serde_json::from_value(req.params.clone()).ok()).flatten()
-}
-
-pub fn cast_notification<N>(not: &lsp_server::Notification) -> Option<N::Params>
-where
-    N: lsp_types::notification::Notification,
-    N::Params: serde::de::DeserializeOwned,
-{
-    (not.method == N::METHOD).then(|| serde_json::from_value(not.params.clone()).ok()).flatten()
-}
 
 #[cfg(test)]
 mod tests {
