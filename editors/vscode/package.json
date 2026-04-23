@@ -26,22 +26,26 @@
             {
                 "command": "scheme.runEvaluation",
                 "title": "Evaluate File",
-                "icon": "$(play)"
+                "icon": "$(play)",
+                "category": "Scheme Toolbox"
             },
             {
                 "command": "scheme.runEvaluateSelection",
                 "title": "Evaluate Selection",
-                "icon": "$(play-circle)"
+                "icon": "$(play-circle)",
+                "category": "Scheme Toolbox"
             },
             {
                 "command": "scheme.restartREPL",
                 "title": "Restart Racket",
-                "icon": "$(refresh)"
+                "icon": "$(refresh)",
+                "category": "Scheme Toolbox"
             },
             {
                 "command": "scheme.clearNamespace",
                 "title": "Reset File",
-                "icon": "$(clear-all)"
+                "icon": "$(clear-all)",
+                "category": "Scheme Toolbox"
             }
         ],
         "submenus": [
@@ -66,7 +70,7 @@
                 },
                 {
                     "command": "scheme.runEvaluateSelection",
-                    "when": "editorLangId == racket || editorLangId == scheme"
+                    "when": "editorHasSelection && (editorLangId == racket || editorLangId == scheme)"
                 },
                 {
                     "command": "scheme.clearNamespace",
@@ -130,6 +134,18 @@
                     ],
                     "default": null,
                     "description": "Custom path to the Racket executable (e.g., /usr/local/bin/racket or C:\\Program Files\\Racket\\racket.exe). If not set, 'racket' is searched for in the system PATH."
+                },
+                "scheme.customFileExtensions": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string",
+                        "enum": [
+                            "racket",
+                            "scheme"
+                        ]
+                    },
+                    "default": {},
+                    "description": "Custom file extensions to associate with Racket or Scheme. Example: { \".rktl\": \"racket\", \".sls\": \"scheme\" }"
                 }
             }
         }
