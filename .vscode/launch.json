@@ -1,0 +1,120 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug unit tests in library 'scheme_toolbox_lsp'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test"
+                ]
+            }
+        },
+        {
+            "name": "Debug executable 'coord-compare'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=coord-compare"
+                ]
+            },
+            "args": []
+        },
+        {
+            "name": "Debug unit tests in executable 'coord-compare'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=coord-compare"
+                ]
+            }
+        },
+        {
+            "name": "Debug executable 'coord-indexer'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=coord-indexer"
+                ]
+            },
+            "args": []
+        },
+        {
+            "name": "Debug unit tests in executable 'coord-indexer'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=coord-indexer"
+                ]
+            }
+        },
+        {
+            "name": "Debug executable 'scheme-toolbox-lsp'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=scheme-toolbox-lsp"
+                ]
+            },
+            "args": []
+        },
+        {
+            "name": "Debug unit tests in executable 'scheme-toolbox-lsp'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=scheme-toolbox-lsp"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'encoding_test'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=encoding_test"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'integration'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=integration"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'windows_test'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=windows_test"
+                ]
+            }
+        }
+    ]
+}

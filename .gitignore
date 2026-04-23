@@ -42,3 +42,6 @@ Cargo.lock
 # Project Logs
 global.session
 
+
+# bv (beads viewer) local config and caches
+.bv/
