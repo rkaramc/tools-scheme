@@ -1,176 +1,22 @@
 import * as vscode from "vscode";
-import * as path from "path";
-import * as fs from "fs";
-import * as os from "os";
-import * as crypto from "crypto";
 import {
   LanguageClient,
   LanguageClientOptions,
   ServerOptions,
 } from "vscode-languageclient/node";
+import {
+  resolveLspPath,
+  cleanupStaleFiles,
+  getRuntimeBinaryPath,
+} from "./utils";
 
 let client: LanguageClient;
 let outputChannel: vscode.OutputChannel;
 let tempServerPath: string | undefined;
 let originalServerPath: string | undefined;
 let lspWatcher: fs.FSWatcher | undefined;
-
-const TEMP_DIR_NAME = "vscode-scheme-toolbox-lsp";
-
-/**
- * Returns the path to the dedicated temporary directory for LSP binaries.
- */
-function getTempDir(): string {
-  const tempDir = path.join(os.tmpdir(), TEMP_DIR_NAME);
-  if (!fs.existsSync(tempDir)) {
-    fs.mkdirSync(tempDir, { recursive: true });
-  }
-  return tempDir;
-}
-
-/**
- * Attempts to clean up stale temporary LSP binaries from previous sessions.
- */
-function cleanupStaleFiles() {
-  const tempDir = path.join(os.tmpdir(), TEMP_DIR_NAME);
-  if (!fs.existsSync(tempDir)) {
-    return;
-  }
-
-  try {
-    const files = fs.readdirSync(tempDir);
-    for (const file of files) {
-      if (
-        (file.startsWith("scheme-toolbox-lsp-") && file.endsWith(".exe")) ||
-        (file.startsWith("eval-shim-") && file.endsWith(".rkt"))
-      ) {
-        const filePath = path.join(tempDir, file);
-        try {
-          fs.unlinkSync(filePath);
-          outputChannel.appendLine(`Cleaned up stale temporary file: ${file}`);
-        } catch (err) {
-          // File is likely in use by another instance, ignore
-        }
-      }
-    }
-  } catch (err) {
-    outputChannel.appendLine(
-      `Failed to scan temporary directory for cleanup: ${err}`,
-    );
-  }
-}
-
-/**
- * Searches for a binary in the system PATH.
- */
-function findInPath(binaryName: string): string | undefined {
-  const paths = (process.env.PATH || process.env.Path || "").split(
-    path.delimiter,
-  );
-  for (const p of paths) {
-    const fullPath = path.join(p, binaryName);
-    if (fs.existsSync(fullPath)) {
-      return fullPath;
-    }
-  }
-  return undefined;
-}
-
-/**
- * Resolves the path to the LSP binary, checking settings, environment, PATH, cargo home, and development fallback.
- */
-function resolveLspPath(context: vscode.ExtensionContext): string | undefined {
-  const binName =
-    process.platform === "win32"
-      ? "scheme-toolbox-lsp.exe"
-      : "scheme-toolbox-lsp";
-
-  // 0. VS Code extension settings
-  const config = vscode.workspace.getConfiguration("scheme");
-  const customLspPath = config.get<string>("lspPath");
-  let serverPath = customLspPath;
-
-  // 1. Development override
-  if (
-    !serverPath &&
-    context.extensionMode === vscode.ExtensionMode.Development
-  ) {
-    const devPath = context.asAbsolutePath(
-      path.join("..", "..", "target", "debug", binName),
-    );
-    if (fs.existsSync(devPath)) {
-      serverPath = devPath;
-    }
-  }
-
-  // 2. Environment Variable override
-  const envLspDir = process.env.TOOLS_SCHEME_LSP_PATH;
-  if (!serverPath && envLspDir) {
-    const envPath = path.join(envLspDir, binName);
-    if (fs.existsSync(envPath)) {
-      serverPath = envPath;
-    }
-  }
-
-  // 3. System PATH
-  if (!serverPath) {
-    serverPath = findInPath(binName);
-  }
-
-  // 4. Common installation paths (e.g., Cargo home)
-  if (!serverPath) {
-    const homeDir = os.homedir();
-    const cargoBinPath = path.join(homeDir, ".cargo", "bin", binName);
-    if (fs.existsSync(cargoBinPath)) {
-      serverPath = cargoBinPath;
-    }
-  }
-
-  return serverPath;
-}
-
-/**
- * Prepares the binary for execution. On Windows in Development mode, this involves
- * copying the binary to a temporary location to avoid locking.
- */
-function getRuntimeBinaryPath(
-  context: vscode.ExtensionContext,
-  originalPath: string,
-): string {
-  const isDevelopment =
-    context.extensionMode === vscode.ExtensionMode.Development;
-  if (!isDevelopment || process.platform !== "win32") {
-    return originalPath;
-  }
-
-  try {
-    const randomSuffix = crypto.randomBytes(8).toString("hex");
-    const tempName = `scheme-toolbox-lsp-${randomSuffix}.exe`;
-    const newTempPath = path.join(getTempDir(), tempName);
-    fs.copyFileSync(originalPath, newTempPath);
-
-    // Cleanup old temp file if it exists
-    if (tempServerPath && fs.existsSync(tempServerPath)) {
-      try {
-        fs.unlinkSync(tempServerPath);
-      } catch (e) {
-        // unlink is trying to remove server binary created earlier by this instance
-        // on win32, unlink fails if this instance's server process is running
-      }
-    }
-
-    tempServerPath = newTempPath;
-    outputChannel.appendLine(
-      `Copied LSP binary to temporary location: ${tempServerPath}`,
-    );
-    return tempServerPath;
-  } catch (err) {
-    outputChannel.appendLine(
-      `Failed to copy LSP binary to temporary location: ${err}`,
-    );
-    return originalPath;
-  }
-}
+import * as fs from "fs"; // Needed for fs.watch and other file ops
+import * as path from "path";
 
 export function activate(context: vscode.ExtensionContext) {
   outputChannel = vscode.window.createOutputChannel("Scheme Toolbox");
@@ -192,7 +38,7 @@ export function activate(context: vscode.ExtensionContext) {
   const isDevelopment =
     context.extensionMode === vscode.ExtensionMode.Development;
   if (isDevelopment) {
-    cleanupStaleFiles();
+    cleanupStaleFiles(outputChannel);
 
     // Watch the original LSP binary for changes (Development only)
     let watchTimeout: NodeJS.Timeout | undefined;
@@ -403,7 +249,8 @@ function startClient(context: vscode.ExtensionContext) {
   if (!originalServerPath) {
     return;
   }
-  const serverPath = getRuntimeBinaryPath(context, originalServerPath);
+  const { newPath: serverPath, updatedTempPath } = getRuntimeBinaryPath(context, originalServerPath, outputChannel, tempServerPath);
+  tempServerPath = updatedTempPath || tempServerPath;
 
   outputChannel.appendLine(`LSP Server Path: ${serverPath}`);
 
