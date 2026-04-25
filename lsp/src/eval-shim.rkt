@@ -1,6 +1,6 @@
 #lang racket
 
-(require json racket/exn)
+(require json racket/exn racket/sandbox racket/snip racket/class racket/draw net/base64)
 
 (define cache-counter 0)
 (define MAX-CACHE-SIZE 100)
@@ -9,7 +9,21 @@
 (define real-stdout (current-output-port))
 (define file-content-cache (make-hash))
 (define cache-access-log (make-hash))
-(define document-namespaces (make-hash))
+(define document-evaluators (make-hash))
+
+(define (snip->base64-png s)
+  (define-values (w h)
+    (let ([wb (box 0)]
+          [hb (box 0)]
+          [dc (make-object bitmap-dc% (make-bitmap 1 1))])
+      (send s get-extent dc 0 0 wb hb #f #f #f #f)
+      (values (max 1 (unbox wb)) (max 1 (unbox hb)))))
+  (define bmp (make-bitmap (inexact->exact (ceiling w)) (inexact->exact (ceiling h))))
+  (define dc (make-object bitmap-dc% bmp))
+  (send s draw dc 0 0 0 0 w h 0 0 '())
+  (define out (open-output-bytes))
+  (send bmp save-file out 'png)
+  (bytes->string/utf-8 (base64-encode (get-output-bytes out))))
 
 (define (cache-content! content source)
   (set! cache-counter (+ cache-counter 1))
@@ -53,8 +67,12 @@
       str))
 
 (define (display-result range val #:is-error [is-error #f] #:output [output ""])
+  (define snip (is-a? val snip%))
   (define result-str
-    (truncate-string (if (exn? val) (exn-message val) (format "~v" val)) MAX-OUTPUT-SIZE))
+    (cond
+      [snip "Rich media"]
+      [else (truncate-string (if (exn? val) (exn-message val) (format "~v" val)) MAX-OUTPUT-SIZE)]))
+  
   (define output-str
     (truncate-string output MAX-OUTPUT-SIZE))
 
@@ -63,6 +81,12 @@
                'result result-str
                'is_error is-error
                'output output-str))
+  
+  ;; For rich media, also emit a dedicated rich payload if it's a snip
+  (when snip
+    (define rich (hash 'type "rich" 'mime "image/png" 'data (snip->base64-png val)))
+    (displayln (jsexpr->string rich) real-stdout))
+
   (displayln (jsexpr->string base) real-stdout)
   (flush-output real-stdout))
 
@@ -225,7 +249,10 @@
                  ;; against the file's own directory (ts-k2w).
                  [current-load-relative-directory file-dir]
                  [current-directory               file-dir])
-    (evaluate-port port file-path (make-base-namespace)))
+    (let ([ns (make-base-namespace)])
+      (namespace-attach-module (current-namespace) 'racket/class ns)
+      (namespace-attach-module (current-namespace) 'racket/snip ns)
+      (evaluate-port port file-path ns)))
 
   (when (string=? path "-") (delete-file target-path)))
 
@@ -294,28 +321,59 @@
                            decoded)])
          (string->path native))))
 
+(define (make-streaming-port type uri)
+  (make-output-port
+   (symbol->string type)
+   always-evt
+   (lambda (s start end non-block? breakable?)
+     (define str (bytes->string/utf-8 (subbytes s start end) #\?))
+     (define msg (hash 'type "output" 'stream (symbol->string type) 'data str 'uri uri))
+     (displayln (jsexpr->string msg) real-stdout)
+     (flush-output real-stdout)
+     (- end start))
+   void))
+
+(define (get-evaluator uri content)
+  (hash-ref! document-evaluators uri
+             (lambda ()
+               (define port (open-input-string content))
+               (define lang (with-handlers ([exn:fail? (lambda (e) 'racket/base)])
+                              (read-language port (lambda () 'racket/base))))
+               ;; Create evaluator with reasonable student limits
+               (parameterize ([sandbox-namespace-specs
+                               (list make-base-namespace
+                                     'racket/class
+                                     'racket/snip)]
+                              [sandbox-output (make-streaming-port 'stdout uri)]
+                              [sandbox-error-output (make-streaming-port 'stderr uri)]
+                              [sandbox-memory-limit 128] ; 128MB
+                              [sandbox-eval-limits '(15 128)]) ; 15s, 128MB
+                 (make-evaluator lang)))))
+
 (define (evaluate-string-content content uri)
-  ;; namespace key: the URI string (or 'repl for anonymous evaluation)
-  (define ns
-    (if uri
-        (hash-ref! document-namespaces uri (lambda () (make-base-namespace)))
-        (current-namespace)))
-  ;; source: a path? object so Racket can resolve relative (require "...") paths
-  ;; at read/expand time.  Falls back to URI string for error messages.
+  (define ev (get-evaluator (or uri "repl") content))
   (define file-path (uri->path uri))
   (define source    (or file-path uri 'repl))
-  (define file-dir  (and file-path (path-only (path->complete-path file-path))))
   (define cached (cache-content! content (or uri 'repl)))
   (define port (open-input-string cached))
   (port-count-lines! port)
-  (parameterize ([read-accept-reader #t]
-                 [read-accept-lang #t]
-                 ;; Set both directory params so relative (require "...") and
-                 ;; any runtime file operations resolve against the file's own
-                 ;; directory (ts-k2w).
-                 [current-load-relative-directory (or file-dir (current-load-relative-directory))]
-                 [current-directory               (or file-dir (current-directory))])
-    (evaluate-port port source ns)))
+  
+  (for-each-syntax port source
+                   (lambda (stx)
+                     (with-handlers ([exn:fail? (lambda (e)
+                                                  (define-values (l c end-c span pos) (get-exn-location e stx))
+                                                  (display-result (make-range l (or (syntax-column stx) 0) l end-c span pos) e #:is-error #t))])
+                       ;; Run expression in sandbox. Output streams directly via streaming-ports.
+                       (define result (ev stx))
+                       
+                       (define-values (end-line end-col) (get-syntax-end stx))
+                       (define start-line (or (syntax-line stx) 1))
+                       (define start-col (or (syntax-column stx) 0))
+                       (define span (or (syntax-span stx) 0))
+                       (define pos (or (syntax-position stx) 1))
+
+                       (when (not (void? result))
+                         (display-result (make-range start-line start-col end-line end-col span pos) result))))))
 
 (define (run-repl)
   (parameterize ([read-accept-reader #t]
@@ -334,7 +392,7 @@
             (cond
               [(string=? type "evaluate") (evaluate-string-content (hash-ref json-input 'content) uri)]
               [(string=? type "parse") (parse-string-content (hash-ref json-input 'content) uri)]
-              [(string=? type "clear-namespace") (when uri (hash-remove! document-namespaces uri))]
+              [(string=? type "clear-namespace") (when uri (hash-remove! document-evaluators uri))]
               [else (eprintf "Unknown REPL command type: ~a\n" type)]))
           (displayln "READY" real-stdout)
           (flush-output real-stdout)
