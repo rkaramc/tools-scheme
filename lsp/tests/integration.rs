@@ -429,3 +429,50 @@ fn test_notebook_cancel_eval() {
     assert!(found_result, "Evaluator died! Subsequent evaluation failed.");
 }
 
+
+#[test]
+fn test_notebook_diagnostic_downgrade() {
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize();
+
+    // 1. Evaluate a normal file with duplicate (should be ERROR)
+    let eval_normal = r#"{"jsonrpc":"2.0","id":50,"method":"workspace/executeCommand","params":{"command":"scheme.evaluateSelection","arguments":["file:///normal.rkt","(define-values (x x) (values 1 2))",{"line":0,"character":0}]}}"#;
+    lsp.write_message(eval_normal);
+
+    let mut found_error = false;
+    for _ in 0..15 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break,
+        };
+        if body.contains("textDocument/publishDiagnostics") && body.contains("normal.rkt") {
+            // Diagnostic severity 1 is Error
+            if body.contains("\"severity\":1") {
+                found_error = true;
+                break;
+            }
+        }
+    }
+    assert!(found_error, "Standard file should have ERROR severity for duplicate identifier");
+
+    // 2. Evaluate a notebook cell with duplicate (should be WARNING)
+    let eval_notebook = r#"{"jsonrpc":"2.0","id":51,"method":"workspace/executeCommand","params":{"command":"scheme.evaluateSelection","arguments":["vscode-notebook-cell:/test.rkt#cell1","(define-values (y y) (values 1 2))",{"line":0,"character":0}]}}"#;
+    lsp.write_message(eval_notebook);
+
+    let mut found_warning = false;
+    for _ in 0..15 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break,
+        };
+        if body.contains("textDocument/publishDiagnostics") && body.contains("vscode-notebook-cell") {
+            // Diagnostic severity 2 is Warning
+            if body.contains("\"severity\":2") {
+                found_warning = true;
+                break;
+            }
+        }
+    }
+    assert!(found_warning, "Notebook cell should have WARNING severity for duplicate identifier");
+}
+
