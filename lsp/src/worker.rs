@@ -51,7 +51,6 @@ pub enum EvalAction {
     Clear,
     Restart,
     EvalCell { code: String, execution_id: u32 },
-    CancelEval { execution_id: u32 },
 }
 
 pub struct EvalTask {
@@ -62,6 +61,7 @@ pub struct EvalTask {
 pub fn eval_worker(
     mut evaluator: Evaluator,
     rx: crossbeam_channel::Receiver<EvalTask>,
+    cancel_rx: crossbeam_channel::Receiver<u32>,
     state: Arc<RwLock<SharedState>>,
     sender: crossbeam_channel::Sender<Message>,
 ) {
@@ -80,10 +80,7 @@ pub fn eval_worker(
                 on_restart(&mut evaluator, &state, &sender);
             }
             EvalAction::EvalCell { code, execution_id } => {
-                on_eval_cell(&mut evaluator, &state, &sender, &task.uri, code, execution_id);
-            }
-            EvalAction::CancelEval { execution_id } => {
-                on_cancel_eval(&mut evaluator, &state, &sender, &task.uri, execution_id);
+                on_eval_cell(&mut evaluator, &state, &sender, &cancel_rx, &task.uri, code, execution_id);
             }
         }
     }
@@ -369,11 +366,12 @@ fn on_eval_cell(
     evaluator: &mut Evaluator,
     _state: &Arc<RwLock<SharedState>>,
     sender: &crossbeam_channel::Sender<Message>,
+    cancel_rx: &crossbeam_channel::Receiver<u32>,
     uri: &str,
     code: String,
     execution_id: u32,
 ) {
-    let result = evaluator.evaluate_notebook_cell(&code, uri, |line| {
+    let result = evaluator.evaluate_notebook_cell(&code, uri, cancel_rx, execution_id, |line| {
         // Parse the line from evaluator. It might be {"type":"output",...}, {"type":"rich",...}, or {"type":"range",...} containing "result"
         if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(line) {
             let output_type = json_val.get("type").and_then(|v| v.as_str());
@@ -448,45 +446,5 @@ fn on_eval_cell(
 
     let not = lsp_server::Notification::new("scheme/notebook/evalFinished".to_string(), eval_finished_params);
     let _ = sender.send(Message::Notification(not));
-}
-
-fn on_cancel_eval(
-    evaluator: &mut Evaluator,
-    state: &Arc<RwLock<SharedState>>,
-    sender: &crossbeam_channel::Sender<Message>,
-    uri_str: &str,
-    execution_id: u32,
-) {
-    evaluator.log("Notebook cancellation requested. Restarting REPL process.");
-    let _ = evaluator.restart();
-    
-    // Clear document state since the process restarted
-    let mut lock = state.write_recovered();
-    if let Some(doc) = lock.document_store.get_mut(uri_str) {
-        doc.results.clear();
-    }
-
-    // Inform the user that the environment was reset
-    let msg = "Evaluation cancelled. The Racket process was restarted and environment state has been cleared.\n";
-    let err_params = serde_json::json!({
-        "executionId": execution_id,
-        "payload": {
-            "type": "error",
-            "data": msg
-        }
-    });
-    let err_not = lsp_server::Notification::new("scheme/notebook/outputStream".to_string(), err_params);
-    let _ = sender.send(Message::Notification(err_not));
-
-    let eval_finished_params = serde_json::json!({
-        "executionId": execution_id,
-        "success": false
-    });
-    let finished_not = lsp_server::Notification::new("scheme/notebook/evalFinished".to_string(), eval_finished_params);
-    let _ = sender.send(Message::Notification(finished_not));
-    
-    // Trigger refreshes to clear old hints/lenses
-    sender.refresh_inlay_hints();
-    sender.refresh_code_lenses();
 }
 

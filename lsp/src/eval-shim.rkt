@@ -375,6 +375,9 @@
                        (when (not (void? result))
                          (display-result (make-range start-line start-col end-line end-col span pos) result))))))
 
+(define current-eval-thread #f)
+(define current-evaluator #f)
+
 (define (run-repl)
   (parameterize ([read-accept-reader #t]
                  [read-accept-lang #t])
@@ -386,17 +389,42 @@
                                      (displayln "READY" real-stdout)
                                      (flush-output real-stdout)
                                      (loop))])
-          (let ([json-input (string->jsexpr input)])
-            (define type (hash-ref json-input 'type))
-            (define uri (hash-ref json-input 'uri #f))
+          (let* ([json-input (string->jsexpr input)]
+                 [type (hash-ref json-input 'type)]
+                 [uri (hash-ref json-input 'uri #f)])
             (cond
-              [(string=? type "evaluate") (evaluate-string-content (hash-ref json-input 'content) uri)]
-              [(string=? type "parse") (parse-string-content (hash-ref json-input 'content) uri)]
-              [(string=? type "clear-namespace") (when uri (hash-remove! document-evaluators uri))]
-              [else (eprintf "Unknown REPL command type: ~a\n" type)]))
-          (displayln "READY" real-stdout)
-          (flush-output real-stdout)
-          (loop))))))
+              [(string=? type "evaluate")
+               (set! current-evaluator (get-evaluator (or uri "repl") (hash-ref json-input 'content)))
+               (set! current-eval-thread
+                     (thread
+                      (lambda ()
+                        (with-handlers ([exn:break? (lambda (e)
+                                                      (display-result (make-range 1 0 1 0 0 1) (make-exn:fail "Evaluation cancelled" (current-continuation-marks)) #:is-error #t)
+                                                      (displayln "READY" real-stdout)
+                                                      (flush-output real-stdout))]
+                                        [exn:fail? (lambda (e)
+                                                     ;; Fallback just in case, but evaluate-string-content already catches most exn:fail?
+                                                     (displayln "READY" real-stdout)
+                                                     (flush-output real-stdout))])
+                          (evaluate-string-content (hash-ref json-input 'content) uri)
+                          (displayln "READY" real-stdout)
+                          (flush-output real-stdout)))))]
+              [(string=? type "cancel-evaluation")
+               (when current-evaluator
+                 (break-evaluator current-evaluator))]
+              [(string=? type "parse")
+               (parse-string-content (hash-ref json-input 'content) uri)
+               (displayln "READY" real-stdout)
+               (flush-output real-stdout)]
+              [(string=? type "clear-namespace")
+               (when uri (hash-remove! document-evaluators uri))
+               (displayln "READY" real-stdout)
+               (flush-output real-stdout)]
+              [else
+               (eprintf "Unknown REPL command type: ~a\n" type)
+               (displayln "READY" real-stdout)
+               (flush-output real-stdout)])))
+        (loop)))))
 
 (module+ main
   (require racket/cmdline)

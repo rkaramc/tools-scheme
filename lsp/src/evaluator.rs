@@ -42,7 +42,7 @@ pub struct RangeResult {
 
 struct ProcessState {
     child: Child,
-    stdin: ChildStdin,
+    stdin_tx: crossbeam_channel::Sender<String>,
     stdout_rx: Receiver<String>,
 }
 
@@ -223,8 +223,16 @@ impl Evaluator {
             .stderr(Stdio::from(session_file.try_clone()?))
             .spawn()?;
 
-        let stdin = child.stdin.take().ok_or_else(|| anyhow!("Failed to open stdin"))?;
+        let mut stdin = child.stdin.take().ok_or_else(|| anyhow!("Failed to open stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("Failed to open stdout"))?;
+        
+        let (stdin_tx, stdin_rx) = crossbeam_channel::bounded::<String>(100);
+        std::thread::spawn(move || {
+            for msg in stdin_rx {
+                if stdin.write_all(msg.as_bytes()).is_err() { break; }
+                if stdin.flush().is_err() { break; }
+            }
+        });
         
         // Bounded channel for REPL stdout to prevent memory explosion if REPL
         // sends huge amounts of data. The worker thread reads this via recv_timeout.
@@ -246,7 +254,7 @@ impl Evaluator {
 
         Ok(ProcessState {
             child,
-            stdin,
+            stdin_tx,
             stdout_rx: rx,
         })
     }
@@ -310,18 +318,15 @@ impl Evaluator {
         line.push('\n');
         
         let mut retry = false;
-        if state.stdin.write_all(line.as_bytes()).is_err() {
+        if state.stdin_tx.send(line.clone()).is_err() {
             retry = true;
-        } else {
-            let _ = state.stdin.flush();
         }
 
         if retry {
             // If pipe is broken, kill the state and retry once
             self.state.take();
             let new_state = self.ensure_alive()?;
-            new_state.stdin.write_all(line.as_bytes())?;
-            new_state.stdin.flush()?;
+            let _ = new_state.stdin_tx.send(line);
         }
 
         let mut results = Vec::new();
@@ -380,8 +385,7 @@ impl Evaluator {
 
         {
             let state = self.ensure_alive()?;
-            state.stdin.write_all(line.as_bytes())?;
-            state.stdin.flush()?;
+            let _ = state.stdin_tx.send(line);
         }
 
         // Wait for READY to ensure the command was processed
@@ -429,17 +433,14 @@ impl Evaluator {
         line.push('\n');
         
         let mut retry = false;
-        if state.stdin.write_all(line.as_bytes()).is_err() {
+        if state.stdin_tx.send(line.clone()).is_err() {
             retry = true;
-        } else {
-            let _ = state.stdin.flush();
         }
 
         if retry {
             self.state.take();
             let new_state = self.ensure_alive()?;
-            new_state.stdin.write_all(line.as_bytes())?;
-            new_state.stdin.flush()?;
+            let _ = new_state.stdin_tx.send(line);
         }
 
         let mut results = Vec::new();
@@ -889,7 +890,14 @@ mod tests {
 }
 
 impl Evaluator {
-    pub fn evaluate_notebook_cell<F>(&mut self, content: &str, uri: &str, mut on_line: F) -> Result<()> 
+    pub fn evaluate_notebook_cell<F>(
+        &mut self, 
+        content: &str, 
+        uri: &str, 
+        cancel_rx: &crossbeam_channel::Receiver<u32>,
+        execution_id: u32,
+        mut on_line: F
+    ) -> Result<()> 
     where 
         F: FnMut(&str)
     {
@@ -909,33 +917,48 @@ impl Evaluator {
         line.push('\n');
         
         let mut retry = false;
-        if state.stdin.write_all(line.as_bytes()).is_err() {
+        if state.stdin_tx.send(line.clone()).is_err() {
             retry = true;
-        } else {
-            let _ = state.stdin.flush();
         }
 
         if retry {
             self.state.take();
             let new_state = self.ensure_alive()?;
-            new_state.stdin.write_all(line.as_bytes())?;
-            new_state.stdin.flush()?;
+            new_state.stdin_tx.send(line)?;
         }
         
         loop {
             let state = self.state.as_mut().unwrap();
-            let buffer = match state.stdout_rx.recv_timeout(self.timeout) {
-                Ok(l) => l,
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+            
+            let buffer = crossbeam_channel::select! {
+                recv(state.stdout_rx) -> msg => match msg {
+                    Ok(l) => l,
+                    Err(_) => {
+                        self.state.take();
+                        return Err(anyhow!("REPL process exited unexpectedly"));
+                    }
+                },
+                recv(cancel_rx) -> msg => {
+                    if let Ok(cancel_id) = msg {
+                        if cancel_id == execution_id {
+                            let cancel_req = serde_json::json!({
+                                "type": "cancel-evaluation",
+                                "uri": uri
+                            });
+                            let mut cancel_line = serde_json::to_string(&cancel_req).unwrap();
+                            cancel_line.push('\n');
+                            let _ = state.stdin_tx.send(cancel_line);
+                        }
+                    }
+                    // Wait for the next message
+                    continue;
+                }
+                default(self.timeout) => {
                     if let Some(mut state) = self.state.take() {
                         let _ = state.child.kill();
                         let _ = state.child.wait();
                     }
                     return Err(anyhow!("Evaluation timed out after {:?}", self.timeout));
-                }
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                    self.state.take();
-                    return Err(anyhow!("REPL process exited unexpectedly"));
                 }
             };
 
