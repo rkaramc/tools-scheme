@@ -18,6 +18,9 @@ let lspWatcher: fs.FSWatcher | undefined;
 import * as fs from "fs"; // Needed for fs.watch and other file ops
 import * as path from "path";
 import { SchemeNotebookSerializer } from "./notebookSerializer";
+import { SchemeNotebookController } from "./notebookController";
+
+let notebookController: SchemeNotebookController | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
   outputChannel = vscode.window.createOutputChannel("Scheme Toolbox");
@@ -29,6 +32,9 @@ export function activate(context: vscode.ExtensionContext) {
       new SchemeNotebookSerializer()
     )
   );
+
+  notebookController = new SchemeNotebookController(() => client);
+  context.subscriptions.push(notebookController);
 
   // 1. Resolve LSP binary path
   const lspPath = resolveLspPath(context);
@@ -318,7 +324,22 @@ function startClient(context: vscode.ExtensionContext) {
 
   // Start the client
   outputChannel.appendLine("Starting LSP client...");
-  client.start();
+  client.start().then(() => {
+    outputChannel.appendLine("LSP client started. Registering notebook listeners.");
+    client.onNotification("scheme/notebook/outputStream", (params) => {
+      if (notebookController) {
+        notebookController.handleOutputStream(params);
+      }
+    });
+
+    client.onNotification("scheme/notebook/evalFinished", (params) => {
+      if (notebookController) {
+        notebookController.handleEvalFinished(params);
+      }
+    });
+  }).catch((err) => {
+    outputChannel.appendLine(`Failed to start LSP client: ${err}`);
+  });
 }
 
 async function restartClient(context: vscode.ExtensionContext) {
