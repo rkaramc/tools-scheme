@@ -38,6 +38,9 @@ Cargo.lock
 
 # Local Agent Preferences
 /.agents/local.md
+/.agents/skills
+/.agents/workflows
+skills-lock.json
 
 # Project Logs
 global.session
