@@ -21,3 +21,32 @@ export enum ExtensionMode {
     Development = 2,
     Test = 3
 }
+
+export enum NotebookCellKind {
+    Markup = 1,
+    Code = 2
+}
+
+export class NotebookCellData {
+    kind: NotebookCellKind;
+    value: string;
+    languageId: string;
+    constructor(kind: NotebookCellKind, value: string, languageId: string) {
+        this.kind = kind;
+        this.value = value;
+        this.languageId = languageId;
+    }
+}
+
+export class NotebookData {
+    cells: NotebookCellData[];
+    constructor(cells: NotebookCellData[]) {
+        this.cells = cells;
+    }
+}
+
+export interface CancellationToken {
+    isCancellationRequested: boolean;
+    onCancellationRequested: any;
+}
+
