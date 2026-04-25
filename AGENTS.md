@@ -6,13 +6,16 @@ Welcome to the **Tools Scheme** repository. This document provides essential con
 
 - **`lsp/`**: Rust implementation of the Language Server Protocol for Racket.
 - **`editors/vscode/`**: VS Code extension source code.
-- **`.agents/workflows/`**: Machine-readable and human-readable guides for specific tasks.
-- **`.beads/`**: Issue tracking using the [Beads](https://github.com/steveyegge/beads) system.
 
-## High-Level Workflows
+## Tooling
+
+- **`.agents/workflows/`**: Machine-readable and human-readable guides for specific tasks.
+- **`.beads/`**: Issue tracking using the [Beads](https://github.com/steveyegge/beads) system. (Agents MUST use the non-interactive `bd` command for issues, e.g., `bd list` or `bd show`. Do not use the interactive `bv` command.)
 
 > [!NOTE]
 > Tooling preferences (e.g., JJ vs Git) are managed via personal overrides in `.agents/local.md`. Agents should check for that file for user-specific workflow instructions.
+
+## High-Level Workflows
 
 Agents should favor following standardized workflows located in `.agents/workflows/`. Specifically:
 

@@ -5,6 +5,7 @@
     "version": "0.1.0",
     "publisher": "rkaramc",
     "license": "MIT",
+    "type": "commonjs",
     "repository": {
         "type": "git",
         "url": "https://github.com/rkaramc/tools-scheme"
@@ -154,18 +155,20 @@
         "vscode:prepublish": "npm run compile",
         "compile": "tsc -p ./",
         "watch": "tsc -watch -p ./",
-        "pretest": "npm run compile && npm run lint",
         "lint": "eslint src --ext ts",
-        "test": "node ./out/test/runTest.js"
+        "test": "jest --detectOpenHandles"
     },
     "devDependencies": {
+        "@types/jest": "^30.0.0",
         "@types/node": "16.x",
         "@types/vscode": "^1.75.0",
         "@typescript-eslint/eslint-plugin": "^5.53.0",
         "@typescript-eslint/parser": "^5.53.0",
         "@vscode/vsce": "^3.7.1",
         "eslint": "^8.34.0",
-        "typescript": "^4.9.5"
+        "jest": "^30.3.0",
+        "ts-jest": "^29.4.9",
+        "typescript": "^5.3.3"
     },
     "dependencies": {
         "vscode-languageclient": "^8.1.0"
