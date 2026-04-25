@@ -476,3 +476,50 @@ fn test_notebook_diagnostic_downgrade() {
     assert!(found_warning, "Notebook cell should have WARNING severity for duplicate identifier");
 }
 
+
+#[test]
+fn test_notebook_state_persistence() {
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize();
+
+    // 1. Define x in cell 1
+    let eval_1 = r#"{"jsonrpc":"2.0","method":"scheme/notebook/evalCell","params":{"uri":"file:///state.rkt","code":"(define x 100)","executionId":1}}"#;
+    lsp.write_message(eval_1);
+    lsp.read_message_timeout(Duration::from_secs(5)); // Ack/Stream
+    lsp.read_message_timeout(Duration::from_secs(5)); // Finished
+
+    // 2. Use x in cell 2
+    let eval_2 = r#"{"jsonrpc":"2.0","method":"scheme/notebook/evalCell","params":{"uri":"file:///state.rkt","code":"(+ x 50)","executionId":2}}"#;
+    lsp.write_message(eval_2);
+    
+    let mut found_result = false;
+    for _ in 0..10 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break,
+        };
+        if body.contains("scheme/notebook/outputStream") && body.contains("150") {
+            found_result = true;
+            break;
+        }
+    }
+    assert!(found_result, "Cell 2 could not access variable defined in Cell 1");
+
+    // 3. Redefine x in cell 3 (should be allowed in REPL/Notebook mode)
+    let eval_3 = r#"{"jsonrpc":"2.0","method":"scheme/notebook/evalCell","params":{"uri":"file:///state.rkt","code":"(define x 200) x","executionId":3}}"#;
+    lsp.write_message(eval_3);
+
+    let mut found_redefined = false;
+    for _ in 0..10 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break,
+        };
+        if body.contains("scheme/notebook/outputStream") && body.contains("200") {
+            found_redefined = true;
+            break;
+        }
+    }
+    assert!(found_redefined, "Cell 3 could not redefine variable x");
+}
+
