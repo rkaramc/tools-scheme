@@ -50,3 +50,7 @@
   - Acceptance: "Duplicate identifier" errors become Warnings in notebooks but stay Errors in standard files.
   - Verify: Check "Problems" tab in both views.
   - Files: `lsp/src/server.rs`
+
+- [ ] **Task 9: True Sandbox Cancellation**
+  - Description: Update eval-shim.rkt to use break-evaluator and process stdin asynchronously so that scheme/notebook/cancelEval can interrupt an infinite loop without killing the process. Modify Rust Evaluator to allow concurrent reading/writing of process pipes.
+  - Acceptance: Cancelling a running cell stops it with a user-friendly error but preserves the notebook's Racket environment state.
