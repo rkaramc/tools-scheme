@@ -887,3 +887,70 @@ mod tests {
         let _ = std::fs::remove_file(&log_path);
     }
 }
+
+impl Evaluator {
+    pub fn evaluate_notebook_cell<F>(&mut self, content: &str, uri: &str, mut on_line: F) -> Result<()> 
+    where 
+        F: FnMut(&str)
+    {
+        let label = uri;
+        writeln!(&mut self.global_session, "\n--- EVAL CELL INPUT NO LOG ({}) ---\n{}\n--- EVAL CELL OUTPUT ---", label, content)?;
+        self.global_session.flush()?;
+
+        let state = self.ensure_alive()?;
+        
+        let req = serde_json::json!({
+            "type": "evaluate",
+            "content": content,
+            "uri": uri
+        });
+
+        let mut line = serde_json::to_string(&req)?;
+        line.push('\n');
+        
+        let mut retry = false;
+        if state.stdin.write_all(line.as_bytes()).is_err() {
+            retry = true;
+        } else {
+            let _ = state.stdin.flush();
+        }
+
+        if retry {
+            self.state.take();
+            let new_state = self.ensure_alive()?;
+            new_state.stdin.write_all(line.as_bytes())?;
+            new_state.stdin.flush()?;
+        }
+        
+        loop {
+            let state = self.state.as_mut().unwrap();
+            let buffer = match state.stdout_rx.recv_timeout(self.timeout) {
+                Ok(l) => l,
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    if let Some(mut state) = self.state.take() {
+                        let _ = state.child.kill();
+                        let _ = state.child.wait();
+                    }
+                    return Err(anyhow!("Evaluation timed out after {:?}", self.timeout));
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    self.state.take();
+                    return Err(anyhow!("REPL process exited unexpectedly"));
+                }
+            };
+
+            writeln!(&mut self.global_session, "{}", buffer)?;
+            self.global_session.flush()?;
+            
+            let trimmed = buffer.trim();
+            if trimmed == "READY" {
+                break;
+            }
+            
+            on_line(trimmed);
+        }
+
+        Ok(())
+    }
+}
+

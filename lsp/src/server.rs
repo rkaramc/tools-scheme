@@ -18,6 +18,33 @@ use crate::documents::DocumentStore;
 use crate::evaluator::{EvalResult};
 use crate::inlay_hints;
 
+#[derive(Debug, Eq, PartialEq, Clone, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalCellParams {
+    pub uri: String,
+    pub code: String,
+    pub execution_id: u32,
+}
+
+pub enum EvalCellNotification {}
+impl lsp_types::notification::Notification for EvalCellNotification {
+    type Params = EvalCellParams;
+    const METHOD: &'static str = "scheme/notebook/evalCell";
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelEvalParams {
+    pub uri: String,
+    pub execution_id: u32,
+}
+
+pub enum CancelEvalNotification {}
+impl lsp_types::notification::Notification for CancelEvalNotification {
+    type Params = CancelEvalParams;
+    const METHOD: &'static str = "scheme/notebook/cancelEval";
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "command", content = "arguments")]
 enum SchemeCommand {
@@ -147,6 +174,31 @@ impl Server {
                     action: EvalAction::Clear,
                 }) {
                     eprintln!("eval_tx channel full, dropping Clear task: {}", e);
+                }
+                Ok(())
+            })?
+            .on_sync_mut::<EvalCellNotification>(|params| {
+                let task = EvalTask {
+                    uri: params.uri,
+                    action: EvalAction::EvalCell {
+                        code: params.code,
+                        execution_id: params.execution_id,
+                    },
+                };
+                if let Err(e) = self.eval_tx.try_send(task) {
+                    eprintln!("eval_tx channel full, dropping EvalCell task: {}", e);
+                }
+                Ok(())
+            })?
+            .on_sync_mut::<CancelEvalNotification>(|params| {
+                let task = EvalTask {
+                    uri: params.uri,
+                    action: EvalAction::CancelEval {
+                        execution_id: params.execution_id,
+                    },
+                };
+                if let Err(e) = self.eval_tx.try_send(task) {
+                    eprintln!("eval_tx channel full, dropping CancelEval task: {}", e);
                 }
                 Ok(())
             })?
