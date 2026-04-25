@@ -1,0 +1,3 @@
+{"type":"evaluate","content":"(define x 5)","uri":"file:///a.rkt"}
+{"type":"evaluate","content":"x","uri":"file:///a.rkt"}
+{"type":"evaluate","content":"x","uri":"file:///b.rkt"}

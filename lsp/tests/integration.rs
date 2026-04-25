@@ -327,3 +327,45 @@ fn test_clear_namespace_preserves_codelens() {
     }
     assert!(found_lenses, "Did not receive code lens response");
 }
+
+#[test]
+fn test_notebook_eval() {
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize();
+
+    let eval_cell = r#"{"jsonrpc":"2.0","method":"scheme/notebook/evalCell","params":{"uri":"file:///notebook.rkt","code":"(display \"hello notebook\\n\") (+ 1 2)","executionId":42}}"#;
+    lsp.write_message(eval_cell);
+
+    let mut found_stdout = false;
+    let mut found_result = false;
+    let mut found_finished = false;
+
+    for _ in 0..20 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(10)) {
+            Some(b) => b,
+            None => break,
+        };
+        
+        if body.contains("scheme/notebook/outputStream") {
+            if body.contains("hello notebook") && body.contains("\"type\":\"stdout\"") {
+                found_stdout = true;
+            }
+            if body.contains("3") && body.contains("\"type\":\"result\"") {
+                found_result = true;
+            }
+        }
+        
+        if body.contains("scheme/notebook/evalFinished") && body.contains("\"executionId\":42") {
+            found_finished = true;
+        }
+        
+        if found_stdout && found_result && found_finished {
+            break;
+        }
+    }
+
+    assert!(found_stdout, "Did not receive stdout output stream");
+    assert!(found_result, "Did not receive result output stream");
+    assert!(found_finished, "Did not receive evalFinished notification");
+}
+

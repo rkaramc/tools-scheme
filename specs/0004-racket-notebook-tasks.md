@@ -20,13 +20,13 @@
   - Files: `lsp/src/eval-shim.rkt`, `lsp/src/evaluator.rs`
 
 ## Phase 2: Rust LSP Backend
-- [ ] **Task 4: Async Notebook Notifications**
+- [x] **Task 4: Async Notebook Notifications**
   - Description: Add `scheme/notebook/evalCell` and `scheme/notebook/cancelEval` handlers.
   - Acceptance: LSP server dispatches notebook tasks to the worker without blocking.
   - Verify: Log verification in `global.session`.
   - Files: `lsp/src/server.rs`, `lsp/src/worker.rs`
 
-- [ ] **Task 5: Output Stream Forwarding**
+- [x] **Task 5: Output Stream Forwarding**
   - Description: Forward JSON payloads from the Racket shim to VS Code as `scheme/notebook/outputStream`.
   - Acceptance: VS Code receive notifications for stdout and rich media during execution.
   - Verify: Integration test in `lsp/tests/integration.rs`.
