@@ -1,19 +1,19 @@
 # Tasks: Racket Notebook Implementation
 
 ## Phase 1: Racket Engine Refactor
-- [ ] **Task 1: Implement Sandbox Evaluator**
+- [x] **Task 1: Implement Sandbox Evaluator**
   - Description: Refactor `eval-shim.rkt` to use `racket/sandbox` for per-document isolated evaluation.
   - Acceptance: `make-evaluator` is used to create namespaces; timeouts and resource limits are configurable.
   - Verify: Run `racket eval-shim.rkt --repl` and verify basic evaluation works.
   - Files: `lsp/src/eval-shim.rkt`
 
-- [ ] **Task 2: Rich Media Serialization**
+- [x] **Task 2: Rich Media Serialization**
   - Description: Implement `current-print` override to serialize `2htdp/image` snips to Base64 PNGs.
   - Acceptance: Evaluating `(circle 10 "solid" "red")` returns a JSON object with `mime: "image/png"`.
   - Verify: Manual test with `racket/gui` and `2htdp/image` loaded.
   - Files: `lsp/src/eval-shim.rkt`
 
-- [ ] **Task 3: Line-based JSON Protocol**
+- [x] **Task 3: Line-based JSON Protocol**
   - Description: Ensure all shim output (stdout/stderr/results) is wrapped in JSON and emitted line-by-line.
   - Acceptance: No raw text is emitted to stdout; everything is a structured JSON payload.
   - Verify: `evaluator.rs` tests updated to handle the new protocol.
