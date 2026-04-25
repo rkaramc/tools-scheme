@@ -249,7 +249,12 @@ function startClient(context: vscode.ExtensionContext) {
   if (!originalServerPath) {
     return;
   }
-  const { newPath: serverPath, updatedTempPath } = getRuntimeBinaryPath(context, originalServerPath, outputChannel, tempServerPath);
+  const { newPath: serverPath, updatedTempPath } = getRuntimeBinaryPath(
+    context,
+    originalServerPath,
+    outputChannel,
+    tempServerPath,
+  );
   tempServerPath = updatedTempPath || tempServerPath;
 
   outputChannel.appendLine(`LSP Server Path: ${serverPath}`);

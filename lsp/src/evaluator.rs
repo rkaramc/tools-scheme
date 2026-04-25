@@ -60,8 +60,8 @@ impl Evaluator {
         let temp_dir = std::env::temp_dir().join(TEMP_SUBDIR);
         std::fs::create_dir_all(&temp_dir)?;
 
-        let random_suffix: String = std::iter::repeat_with(fastrand::lowercase).take(8).collect();
-        let session_name = format!("global-{}.session", random_suffix);
+        // Use project-specific session name instead of random suffix
+        let session_name = "global.session".to_string();
         let global_session_path = temp_dir.join(session_name);
 
         let mut global_session = std::fs::OpenOptions::new()
