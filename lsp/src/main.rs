@@ -59,17 +59,19 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     // Bounded channel to prevent OOM when user typing triggers many parses.
     // Stale tasks are handled via version checking or dropping.
     let (eval_tx, eval_rx) = crossbeam_channel::bounded(10);
+    let (cancel_tx, cancel_rx) = crossbeam_channel::unbounded::<u32>();
 
     // Spawn the eval worker. It owns the Evaluator (and thus the Racket REPL
     // child process) and is the only thread that ever calls into it.
     let worker_state = Arc::clone(&state);
     let worker_sender = connection.sender.clone();
     std::thread::spawn(move || {
-        eval_worker(evaluator, eval_rx, worker_state, worker_sender);
+        eval_worker(evaluator, eval_rx, cancel_rx, worker_state, worker_sender);
     });
 
     let mut server = Server {
         eval_tx,
+        cancel_tx,
         state,
     };
 

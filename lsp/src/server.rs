@@ -86,6 +86,7 @@ impl<T> RwLockExt<T> for RwLock<T> {
 use crate::worker::{EvalAction, EvalTask};
 pub struct Server {
     pub eval_tx: crossbeam_channel::Sender<EvalTask>,
+    pub cancel_tx: crossbeam_channel::Sender<u32>,
     pub state: Arc<RwLock<SharedState>>,
 }
 
@@ -191,14 +192,8 @@ impl Server {
                 Ok(())
             })?
             .on_sync_mut::<CancelEvalNotification>(|params| {
-                let task = EvalTask {
-                    uri: params.uri,
-                    action: EvalAction::CancelEval {
-                        execution_id: params.execution_id,
-                    },
-                };
-                if let Err(e) = self.eval_tx.try_send(task) {
-                    eprintln!("eval_tx channel full, dropping CancelEval task: {}", e);
+                if let Err(e) = self.cancel_tx.send(params.execution_id) {
+                    eprintln!("cancel_tx channel full, dropping CancelEval task: {}", e);
                 }
                 Ok(())
             })?

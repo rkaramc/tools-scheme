@@ -369,3 +369,63 @@ fn test_notebook_eval() {
     assert!(found_finished, "Did not receive evalFinished notification");
 }
 
+
+#[test]
+fn test_notebook_cancel_eval() {
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize();
+
+    // Send an infinite loop
+    let eval_cell = r#"{"jsonrpc":"2.0","method":"scheme/notebook/evalCell","params":{"uri":"file:///notebook_cancel.rkt","code":"(let loop () (loop))","executionId":43}}"#;
+    lsp.write_message(eval_cell);
+
+    // Wait a brief moment to ensure it started
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Send cancellation
+    let cancel_eval = r#"{"jsonrpc":"2.0","method":"scheme/notebook/cancelEval","params":{"uri":"file:///notebook_cancel.rkt","executionId":43}}"#;
+    lsp.write_message(cancel_eval);
+
+    let mut found_finished = false;
+    let mut found_error = false;
+
+    for _ in 0..20 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break,
+        };
+        
+        if body.contains("scheme/notebook/outputStream") && body.contains("\"type\":\"error\"") && body.contains("cancelled") {
+            found_error = true;
+        }
+        
+        if body.contains("scheme/notebook/evalFinished") && body.contains("\"executionId\":43") && body.contains("\"success\":true") {
+            found_finished = true;
+        }
+        
+        if found_error && found_finished {
+            break;
+        }
+    }
+
+    assert!(found_error, "Did not receive error output stream for cancellation");
+    assert!(found_finished, "Did not receive evalFinished notification with success=true");
+
+    // The evaluator should still be alive, so a subsequent evaluation should work immediately
+    let eval_cell2 = r#"{"jsonrpc":"2.0","method":"scheme/notebook/evalCell","params":{"uri":"file:///notebook_cancel.rkt","code":"(+ 10 20)","executionId":44}}"#;
+    lsp.write_message(eval_cell2);
+
+    let mut found_result = false;
+    for _ in 0..10 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break,
+        };
+        if body.contains("scheme/notebook/outputStream") && body.contains("30") {
+            found_result = true;
+            break;
+        }
+    }
+    assert!(found_result, "Evaluator died! Subsequent evaluation failed.");
+}
+
