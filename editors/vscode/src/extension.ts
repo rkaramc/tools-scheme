@@ -296,6 +296,8 @@ function startClient(context: vscode.ExtensionContext) {
     documentSelector: [
       { scheme: "file", language: "racket" },
       { scheme: "file", language: "scheme" },
+      { scheme: "vscode-notebook-cell", language: "racket" },
+      { scheme: "vscode-notebook-cell", language: "scheme" },
     ],
     synchronize: {
       fileEvents: vscode.workspace.createFileSystemWatcher(`**/*.${extGlob}`),

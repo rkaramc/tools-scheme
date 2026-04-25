@@ -154,9 +154,18 @@ fn on_evaluate(
                         Position::new(res.line.saturating_sub(1), res.col),
                         Position::new(res.end_line.saturating_sub(1), res.end_col),
                     );
+                    
+                    let mut severity = DiagnosticSeverity::ERROR;
+                    if uri_str.starts_with("vscode-notebook-cell:") {
+                        let msg_lower = res.result.to_lowercase();
+                        if msg_lower.contains("duplicate identifier") || msg_lower.contains("duplicate binding") {
+                            severity = DiagnosticSeverity::WARNING;
+                        }
+                    }
+
                     Diagnostic {
                         range,
-                        severity: Some(DiagnosticSeverity::ERROR),
+                        severity: Some(severity),
                         message: res.result.clone(),
                         ..Default::default()
                     }
