@@ -1,0 +1,80 @@
+import * as vscode from 'vscode';
+import { TextDecoder, TextEncoder } from 'util';
+
+export class SchemeNotebookSerializer implements vscode.NotebookSerializer {
+    private readonly decoder = new TextDecoder();
+    private readonly encoder = new TextEncoder();
+
+    public async deserializeNotebook(
+        content: Uint8Array,
+        _token: vscode.CancellationToken
+    ): Promise<vscode.NotebookData> {
+        const str = this.decoder.decode(content);
+        const cells: vscode.NotebookCellData[] = [];
+
+        let currentIndex = 0;
+        const markdownStartRegex = /#\|\s*markdown\s*\n?/g;
+
+        while (currentIndex < str.length) {
+            markdownStartRegex.lastIndex = currentIndex;
+            const match = markdownStartRegex.exec(str);
+
+            if (match) {
+                // Code before the markdown block
+                const codePart = str.substring(currentIndex, match.index);
+                // Strip leading empty lines but preserve indentation. 
+                // For simplicity, just trim trailing spaces/newlines and leading newlines.
+                const cleanCodePart = codePart.replace(/^\s*\n/, '').trimEnd();
+                
+                if (cleanCodePart.length > 0) {
+                    cells.push(new vscode.NotebookCellData(vscode.NotebookCellKind.Code, cleanCodePart, 'racket'));
+                }
+
+                const mdContentStart = match.index + match[0].length;
+                const endBlockIndex = str.indexOf('|#', mdContentStart);
+
+                if (endBlockIndex !== -1) {
+                    const mdContent = str.substring(mdContentStart, endBlockIndex);
+                    cells.push(new vscode.NotebookCellData(vscode.NotebookCellKind.Markup, mdContent.trim(), 'markdown'));
+                    currentIndex = endBlockIndex + 2;
+                } else {
+                    // Unclosed markdown block
+                    const mdContent = str.substring(mdContentStart);
+                    cells.push(new vscode.NotebookCellData(vscode.NotebookCellKind.Markup, mdContent.trim(), 'markdown'));
+                    currentIndex = str.length;
+                }
+            } else {
+                // Remaining code
+                const codePart = str.substring(currentIndex);
+                const cleanCodePart = codePart.replace(/^\s*\n/, '').trimEnd();
+                if (cleanCodePart.length > 0 || cells.length === 0) {
+                    cells.push(new vscode.NotebookCellData(vscode.NotebookCellKind.Code, cleanCodePart, 'racket'));
+                }
+                currentIndex = str.length;
+            }
+        }
+
+        if (cells.length === 0) {
+            cells.push(new vscode.NotebookCellData(vscode.NotebookCellKind.Code, '', 'racket'));
+        }
+
+        return new vscode.NotebookData(cells);
+    }
+
+    public async serializeNotebook(
+        data: vscode.NotebookData,
+        _token: vscode.CancellationToken
+    ): Promise<Uint8Array> {
+        let contents = '';
+
+        for (const cell of data.cells) {
+            if (cell.kind === vscode.NotebookCellKind.Markup) {
+                contents += `#| markdown\n${cell.value}\n|#\n\n`;
+            } else {
+                contents += `${cell.value}\n\n`;
+            }
+        }
+
+        return this.encoder.encode(contents.trimEnd() + '\n');
+    }
+}

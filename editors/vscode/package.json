@@ -116,6 +116,17 @@
                 ]
             }
         ],
+        "notebooks": [
+            {
+                "type": "scheme-notebook",
+                "displayName": "Scheme Notebook",
+                "selector": [
+                    {
+                        "filenamePattern": "*.{rkt,rktl,scm,ss}"
+                    }
+                ]
+            }
+        ],
         "configuration": {
             "type": "object",
             "title": "Scheme Toolbox",

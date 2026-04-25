@@ -17,10 +17,18 @@ let originalServerPath: string | undefined;
 let lspWatcher: fs.FSWatcher | undefined;
 import * as fs from "fs"; // Needed for fs.watch and other file ops
 import * as path from "path";
+import { SchemeNotebookSerializer } from "./notebookSerializer";
 
 export function activate(context: vscode.ExtensionContext) {
   outputChannel = vscode.window.createOutputChannel("Scheme Toolbox");
   outputChannel.appendLine("Activating Scheme Toolbox extension...");
+
+  context.subscriptions.push(
+    vscode.workspace.registerNotebookSerializer(
+      "scheme-notebook",
+      new SchemeNotebookSerializer()
+    )
+  );
 
   // 1. Resolve LSP binary path
   const lspPath = resolveLspPath(context);
