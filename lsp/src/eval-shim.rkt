@@ -336,9 +336,29 @@
 (define (get-evaluator uri content)
   (hash-ref! document-evaluators uri
              (lambda ()
-               (define port (open-input-string content))
-               (define lang (with-handlers ([exn:fail? (lambda (e) 'racket/base)])
-                              (read-language port (lambda () 'racket/base))))
+                (define file-path (uri->path uri))
+                ;; Only try to get directory if we have a valid path (ts-k2w)
+                (define file-dir (and file-path 
+                                      (let ([p (path->complete-path file-path)])
+                                        (if (directory-exists? p) p (path-only p)))))
+                (define port (open-input-string content))
+                (port-count-lines! port)
+               
+               ;; read-language parses the #lang header but does NOT consume 
+               ;; the module body (unlike read-syntax).
+               (define lang-spec (with-handlers ([exn:fail? (lambda (e) 'racket/base)])
+                                   (parameterize ([read-accept-reader #t]
+                                                  [read-accept-lang #t])
+                                     (read-language port (lambda () 'racket/base)))))
+               
+               ;; If read-language returns a procedure (the 'get-info' handler),
+               ;; make-evaluator often rejects it as a 'bad language spec'.
+               ;; We normalize it to a known safe module path symbol.
+               (define lang
+                 (if (procedure? lang-spec)
+                     'racket
+                     lang-spec))
+
                ;; Create evaluator with reasonable student limits
                (parameterize ([sandbox-namespace-specs
                                (list make-base-namespace
@@ -347,8 +367,13 @@
                               [sandbox-output (make-streaming-port 'stdout uri)]
                               [sandbox-error-output (make-streaming-port 'stderr uri)]
                               [sandbox-memory-limit 128] ; 128MB
-                              [sandbox-eval-limits '(15 128)]) ; 15s, 128MB
-                 (make-evaluator lang)))))
+                              [sandbox-eval-limits '(15 128)] ; 15s, 128MB
+                              ;; Set directory parameters so the sandbox starts in the right place (ts-k2w)
+                              [current-directory (or file-dir (current-directory))]
+                              [current-load-relative-directory file-dir])
+                 (if file-dir
+                     (make-evaluator lang #:allow-read (list file-dir))
+                     (make-evaluator lang))))))
 
 (define (evaluate-string-content content uri)
   (define ev (get-evaluator (or uri "repl") content))
@@ -358,6 +383,16 @@
   (define port (open-input-string cached))
   (port-count-lines! port)
   
+  ;; Consume the #lang header if present, so for-each-syntax starts at the 
+  ;; first real expression. This ensures we evaluate forms individually 
+  ;; even in #lang files, which is required for ts-h31.
+  (parameterize ([read-accept-reader #t]
+                 [read-accept-lang #t])
+    (define pos (file-position port))
+    (unless (with-handlers ([exn:fail? (lambda (e) #f)])
+              (read-language port (lambda () #f)))
+      (file-position port pos)))
+
   (for-each-syntax port source
                    (lambda (stx)
                      (with-handlers ([exn:fail? (lambda (e)
