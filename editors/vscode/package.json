@@ -99,7 +99,8 @@
             {
                 "id": "racket",
                 "extensions": [
-                    ".rkt"
+                    ".rkt",
+                    ".rktnb"
                 ],
                 "aliases": [
                     "Racket"
@@ -109,7 +110,8 @@
                 "id": "scheme",
                 "extensions": [
                     ".scm",
-                    ".ss"
+                    ".ss",
+                    ".scmnb"
                 ],
                 "aliases": [
                     "Scheme"
@@ -122,7 +124,7 @@
                 "displayName": "Scheme Notebook",
                 "selector": [
                     {
-                        "filenamePattern": "*.{rkt,rktl,scm,ss}"
+                        "filenamePattern": "*.{rktnb,scmnb}"
                     }
                 ]
             }

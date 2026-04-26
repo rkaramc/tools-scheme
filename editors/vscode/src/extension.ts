@@ -281,7 +281,7 @@ function startClient(context: vscode.ExtensionContext) {
   const config = vscode.workspace.getConfiguration("scheme");
   const customExts =
     config.get<Record<string, string>>("customFileExtensions") || {};
-  const defaultExts = ["rkt", "scm", "ss"];
+  const defaultExts = ["rkt", "scm", "ss", "rktnb", "scmnb"];
   const allExts = [
     ...defaultExts,
     ...Object.keys(customExts).map((ext) =>
