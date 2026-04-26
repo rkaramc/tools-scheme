@@ -60,6 +60,7 @@ export class SchemeNotebookController {
         try {
             await c.sendNotification('scheme/notebook/evalCell', {
                 uri: uriStr,
+                notebookUri: cell.notebook.uri.toString(),
                 code: cell.document.getText(),
                 executionId: execution.executionOrder
             });

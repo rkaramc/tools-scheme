@@ -50,7 +50,11 @@ pub enum EvalAction {
     Parse { version: i32 },
     Clear,
     Restart,
-    EvalCell { code: String, execution_id: u32 },
+    EvalCell { 
+        code: String, 
+        execution_id: u32,
+        notebook_uri: Option<String>,
+    },
 }
 
 pub struct EvalTask {
@@ -79,8 +83,8 @@ pub fn eval_worker(
             EvalAction::Restart => {
                 on_restart(&mut evaluator, &state, &sender);
             }
-            EvalAction::EvalCell { code, execution_id } => {
-                on_eval_cell(&mut evaluator, &state, &sender, &cancel_rx, &task.uri, code, execution_id);
+            EvalAction::EvalCell { code, execution_id, notebook_uri } => {
+                on_eval_cell(&mut evaluator, &state, &sender, &cancel_rx, &task.uri, notebook_uri, code, execution_id);
             }
         }
     }
@@ -377,10 +381,12 @@ fn on_eval_cell(
     sender: &crossbeam_channel::Sender<Message>,
     cancel_rx: &crossbeam_channel::Receiver<u32>,
     uri: &str,
+    notebook_uri: Option<String>,
     code: String,
     execution_id: u32,
 ) {
-    let result = evaluator.evaluate_notebook_cell(&code, uri, cancel_rx, execution_id, |line| {
+    let eval_uri = notebook_uri.as_deref().unwrap_or(uri);
+    let result = evaluator.evaluate_notebook_cell(&code, eval_uri, cancel_rx, execution_id, |line| {
         // Parse the line from evaluator. It might be {"type":"output",...}, {"type":"rich",...}, or {"type":"range",...} containing "result"
         if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(line) {
             let output_type = json_val.get("type").and_then(|v| v.as_str());
