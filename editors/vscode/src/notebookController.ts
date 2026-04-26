@@ -5,7 +5,7 @@ export class SchemeNotebookController {
     readonly controllerId = 'scheme-controller';
     readonly notebookType = 'scheme-notebook';
     readonly label = 'Scheme/Racket (LSP)';
-    readonly supportedLanguages = ['racket', 'scheme'];
+    readonly supportedLanguages = ['racket', 'scheme', 'racket-notebook-cell', 'scheme-notebook-cell'];
 
     private readonly _controller: vscode.NotebookController;
     private _executionOrder = 0;
@@ -54,15 +54,17 @@ export class SchemeNotebookController {
         }
 
         const uriStr = cell.document.uri.toString();
+        const notebookUriStr = cell.notebook.uri.toString();
         this._activeExecutions.set(uriStr, execution);
 
         // Send execution request to LSP
         try {
             await c.sendNotification('scheme/notebook/evalCell', {
                 uri: uriStr,
-                notebookUri: cell.notebook.uri.toString(),
+                notebookUri: notebookUriStr,
                 code: cell.document.getText(),
-                executionId: execution.executionOrder
+                executionId: execution.executionOrder,
+                version: cell.document.version
             });
         } catch (err) {
             execution.appendOutput(new vscode.NotebookCellOutput([

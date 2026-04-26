@@ -25,6 +25,7 @@ pub struct EvalCellParams {
     pub notebook_uri: Option<String>,
     pub code: String,
     pub execution_id: u32,
+    pub version: Option<i32>,
 }
 
 pub enum EvalCellNotification {}
@@ -134,11 +135,15 @@ impl Server {
                 let uri = params.text_document.uri.to_string();
                 let version = params.text_document.version;
                 self.write_state().document_store.open(params.text_document);
-                if let Err(e) = self.eval_tx.try_send(EvalTask {
-                    uri,
-                    action: EvalAction::Parse { version },
-                }) {
-                    eprintln!("eval_tx channel full, dropping parse task: {}", e);
+                
+                // Skip parsing for notebook cells to avoid CodeLens clutter
+                if !uri.starts_with("vscode-notebook-cell:") {
+                    if let Err(e) = self.eval_tx.try_send(EvalTask {
+                        uri,
+                        action: EvalAction::Parse { version },
+                    }) {
+                        eprintln!("eval_tx channel full, dropping parse task: {}", e);
+                    }
                 }
                 Ok(())
             })?
@@ -157,10 +162,13 @@ impl Server {
                         doc.text = new_text;
                         doc.line_index = new_idx;
 
-                        let _ = self.eval_tx.send(EvalTask {
-                            uri,
-                            action: EvalAction::Parse { version: doc.version },
-                        });
+                        // Skip parsing for notebook cells
+                        if !uri.starts_with("vscode-notebook-cell:") {
+                            let _ = self.eval_tx.send(EvalTask {
+                                uri,
+                                action: EvalAction::Parse { version: doc.version },
+                            });
+                        }
                     }
                 }
                 Ok(())
@@ -186,6 +194,7 @@ impl Server {
                         code: params.code,
                         execution_id: params.execution_id,
                         notebook_uri: params.notebook_uri,
+                        version: params.version,
                     },
                 };
                 if let Err(e) = self.eval_tx.try_send(task) {
@@ -352,6 +361,14 @@ impl Server {
 
     pub fn handle_code_lens(&self, connection: &lsp_server::Connection, id: RequestId, params: CodeLensParams) -> Result<(), Box<dyn Error + Sync + Send>> {
         let uri_str = params.text_document.uri.to_string();
+        
+        // No CodeLenses for notebooks
+        if uri_str.starts_with("vscode-notebook-cell:") {
+            let resp = Response::new_ok(id, Some(Vec::<CodeLens>::new()));
+            connection.sender.send(Message::Response(resp))?;
+            return Ok(());
+        }
+
         let state = self.read_state();
         let mut lenses = Vec::new();
 

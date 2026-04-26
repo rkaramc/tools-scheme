@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Scheme Notebook Cell",
+  "scopeName": "source.scheme-notebook-cell",
+  "patterns": [
+    {
+      "include": "source.scheme"
+    }
+  ]
+}

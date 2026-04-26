@@ -54,6 +54,7 @@ pub enum EvalAction {
         code: String, 
         execution_id: u32,
         notebook_uri: Option<String>,
+        version: Option<i32>,
     },
 }
 
@@ -83,8 +84,8 @@ pub fn eval_worker(
             EvalAction::Restart => {
                 on_restart(&mut evaluator, &state, &sender);
             }
-            EvalAction::EvalCell { code, execution_id, notebook_uri } => {
-                on_eval_cell(&mut evaluator, &state, &sender, &cancel_rx, &task.uri, notebook_uri, code, execution_id);
+            EvalAction::EvalCell { code, execution_id, notebook_uri, version } => {
+                on_eval_cell(&mut evaluator, &state, &sender, &cancel_rx, &task.uri, notebook_uri, code, execution_id, version);
             }
         }
     }
@@ -380,12 +381,20 @@ fn on_eval_cell(
     _state: &Arc<RwLock<SharedState>>,
     sender: &crossbeam_channel::Sender<Message>,
     cancel_rx: &crossbeam_channel::Receiver<u32>,
-    uri: &str,
+    uri_str: &str,
     notebook_uri: Option<String>,
     code: String,
     execution_id: u32,
+    version: Option<i32>,
 ) {
-    let eval_uri = notebook_uri.as_deref().unwrap_or(uri);
+    let uri = match lsp_types::Uri::from_str(uri_str) {
+        Ok(u) => u,
+        Err(_) => return,
+    };
+    let eval_uri = notebook_uri.as_deref().unwrap_or(uri_str);
+    
+    let mut diagnostics = Vec::new();
+
     let result = evaluator.evaluate_notebook_cell(&code, eval_uri, cancel_rx, execution_id, |line| {
         // Parse the line from evaluator. It might be {"type":"output",...}, {"type":"rich",...}, or {"type":"range",...} containing "result"
         if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(line) {
@@ -416,9 +425,8 @@ fn on_eval_cell(
                 });
                 let not = lsp_server::Notification::new("scheme/notebook/outputStream".to_string(), params);
                 let _ = sender.send(Message::Notification(not));
-            } else if json_val.get("result").is_some() {
-                // It's a standard result
-                let data = json_val.get("result").and_then(|v| v.as_str()).unwrap_or("");
+            } else if let Some(res_str) = json_val.get("result").and_then(|v| v.as_str()) {
+                // It's a standard result or evaluation error reported via display-result
                 let is_error = json_val.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
                 let typ = if is_error { "error" } else { "result" };
                 
@@ -426,14 +434,44 @@ fn on_eval_cell(
                     "executionId": execution_id,
                     "payload": {
                         "type": typ,
-                        "data": data
+                        "data": res_str
                     }
                 });
                 let not = lsp_server::Notification::new("scheme/notebook/outputStream".to_string(), params);
                 let _ = sender.send(Message::Notification(not));
+
+                if is_error {
+                    let line = json_val.get("line").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+                    let col = json_val.get("col").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    let end_line = json_val.get("end_line").and_then(|v| v.as_u64()).unwrap_or(line as u64) as u32;
+                    let end_col = json_val.get("end_col").and_then(|v| v.as_u64()).unwrap_or(col as u64) as u32;
+
+                    let range = Range::new(
+                        Position::new(line.saturating_sub(1), col),
+                        Position::new(end_line.saturating_sub(1), end_col),
+                    );
+                    
+                    let mut severity = DiagnosticSeverity::ERROR;
+                    let msg_lower = res_str.to_lowercase();
+                    if uri_str.starts_with("vscode-notebook-cell:") {
+                        if msg_lower.contains("duplicate identifier") || msg_lower.contains("duplicate binding") {
+                            severity = DiagnosticSeverity::WARNING;
+                        }
+                    }
+
+                    diagnostics.push(Diagnostic {
+                        range,
+                        severity: Some(severity),
+                        message: res_str.to_string(),
+                        ..Default::default()
+                    });
+                }
             }
         }
     });
+
+    // Send collected diagnostics for the cell
+    sender.send_diagnostics(uri, diagnostics, version);
 
     let eval_finished_params = match result {
         Ok(_) => serde_json::json!({
@@ -462,4 +500,3 @@ fn on_eval_cell(
     let not = lsp_server::Notification::new("scheme/notebook/evalFinished".to_string(), eval_finished_params);
     let _ = sender.send(Message::Notification(not));
 }
-

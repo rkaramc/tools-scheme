@@ -87,10 +87,10 @@ export function resolveLspPath(context: vscode.ExtensionContext): string | undef
   const customLspPath = config.get<string>("lspPath");
   let serverPath = customLspPath;
 
-  // 1. Development override
+  // 1. Development/Test override
   if (
     !serverPath &&
-    context.extensionMode === vscode.ExtensionMode.Development
+    (context.extensionMode === vscode.ExtensionMode.Development || context.extensionMode === vscode.ExtensionMode.Test)
   ) {
     const devPath = context.asAbsolutePath(
       path.join("..", "..", "target", "debug", binName),
@@ -137,7 +137,7 @@ export function getRuntimeBinaryPath(
   currentTempPath?: string,
 ): { newPath: string; updatedTempPath?: string } {
   const isDevelopment =
-    context.extensionMode === vscode.ExtensionMode.Development;
+    context.extensionMode === vscode.ExtensionMode.Development || context.extensionMode === vscode.ExtensionMode.Test;
   if (!isDevelopment || process.platform !== "win32") {
     return { newPath: originalPath };
   }
