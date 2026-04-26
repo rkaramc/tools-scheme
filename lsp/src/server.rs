@@ -22,6 +22,7 @@ use crate::inlay_hints;
 #[serde(rename_all = "camelCase")]
 pub struct EvalCellParams {
     pub uri: String,
+    pub notebook_uri: Option<String>,
     pub code: String,
     pub execution_id: u32,
 }
@@ -184,6 +185,7 @@ impl Server {
                     action: EvalAction::EvalCell {
                         code: params.code,
                         execution_id: params.execution_id,
+                        notebook_uri: params.notebook_uri,
                     },
                 };
                 if let Err(e) = self.eval_tx.try_send(task) {
