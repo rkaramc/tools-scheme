@@ -12,6 +12,13 @@ export class SchemeNotebookSerializer implements vscode.NotebookSerializer {
         const str = this.decoder.decode(content);
         const cells: vscode.NotebookCellData[] = [];
 
+        // Determine the language ID for code cells based on the file extension
+        // Since we don't have direct access to the URI here easily, 
+        // we can default to 'racket-notebook-cell' and let the notebook type handle it.
+        // Actually, the NotebookSerializer is registered for 'scheme-notebook'.
+        // We'll use 'racket-notebook-cell' as the default for now.
+        const langId = 'racket-notebook-cell';
+
         let currentIndex = 0;
         const markdownStartRegex = /#\|\s*markdown\s*\n?/g;
 
@@ -22,12 +29,10 @@ export class SchemeNotebookSerializer implements vscode.NotebookSerializer {
             if (match) {
                 // Code before the markdown block
                 const codePart = str.substring(currentIndex, match.index);
-                // Strip leading empty lines but preserve indentation. 
-                // For simplicity, just trim trailing spaces/newlines and leading newlines.
                 const cleanCodePart = codePart.replace(/^\s*\n/, '').trimEnd();
                 
                 if (cleanCodePart.length > 0) {
-                    cells.push(new vscode.NotebookCellData(vscode.NotebookCellKind.Code, cleanCodePart, 'racket'));
+                    cells.push(new vscode.NotebookCellData(vscode.NotebookCellKind.Code, cleanCodePart, langId));
                 }
 
                 const mdContentStart = match.index + match[0].length;
@@ -48,14 +53,14 @@ export class SchemeNotebookSerializer implements vscode.NotebookSerializer {
                 const codePart = str.substring(currentIndex);
                 const cleanCodePart = codePart.replace(/^\s*\n/, '').trimEnd();
                 if (cleanCodePart.length > 0 || cells.length === 0) {
-                    cells.push(new vscode.NotebookCellData(vscode.NotebookCellKind.Code, cleanCodePart, 'racket'));
+                    cells.push(new vscode.NotebookCellData(vscode.NotebookCellKind.Code, cleanCodePart, langId));
                 }
                 currentIndex = str.length;
             }
         }
 
         if (cells.length === 0) {
-            cells.push(new vscode.NotebookCellData(vscode.NotebookCellKind.Code, '', 'racket'));
+            cells.push(new vscode.NotebookCellData(vscode.NotebookCellKind.Code, '', langId));
         }
 
         return new vscode.NotebookData(cells);

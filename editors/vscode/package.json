@@ -61,37 +61,37 @@
                 {
                     "submenu": "scheme.submenu",
                     "group": "navigation",
-                    "when": "editorLangId == racket || editorLangId == scheme"
+                    "when": "editorLangId == racket || editorLangId == scheme || editorLangId == racket-notebook-cell || editorLangId == scheme-notebook-cell"
                 }
             ],
             "scheme.submenu": [
                 {
                     "command": "scheme.runEvaluation",
-                    "when": "editorLangId == racket || editorLangId == scheme"
+                    "when": "editorLangId == racket || editorLangId == scheme || editorLangId == racket-notebook-cell || editorLangId == scheme-notebook-cell"
                 },
                 {
                     "command": "scheme.runEvaluateSelection",
-                    "when": "editorHasSelection && (editorLangId == racket || editorLangId == scheme)"
+                    "when": "editorHasSelection && (editorLangId == racket || editorLangId == scheme || editorLangId == racket-notebook-cell || editorLangId == scheme-notebook-cell)"
                 },
                 {
                     "command": "scheme.clearNamespace",
-                    "when": "editorLangId == racket || editorLangId == scheme"
+                    "when": "editorLangId == racket || editorLangId == scheme || editorLangId == racket-notebook-cell || editorLangId == scheme-notebook-cell"
                 },
                 {
                     "command": "scheme.restartREPL",
-                    "when": "editorLangId == racket || editorLangId == scheme"
+                    "when": "editorLangId == racket || editorLangId == scheme || editorLangId == racket-notebook-cell || editorLangId == scheme-notebook-cell"
                 }
             ],
             "editor/context": [
                 {
                     "command": "scheme.runEvaluation",
                     "group": "navigation",
-                    "when": "editorLangId == racket || editorLangId == scheme"
+                    "when": "editorLangId == racket || editorLangId == scheme || editorLangId == racket-notebook-cell || editorLangId == scheme-notebook-cell"
                 },
                 {
                     "command": "scheme.runEvaluateSelection",
                     "group": "navigation",
-                    "when": "editorHasSelection && (editorLangId == racket || editorLangId == scheme)"
+                    "when": "editorHasSelection && (editorLangId == racket || editorLangId == scheme || editorLangId == racket-notebook-cell || editorLangId == scheme-notebook-cell)"
                 }
             ]
         },
@@ -116,11 +116,36 @@
                 "aliases": [
                     "Scheme"
                 ]
+            },
+            {
+                "id": "racket-notebook-cell",
+                "aliases": [
+                    "Racket Notebook"
+                ]
+            },
+            {
+                "id": "scheme-notebook-cell",
+                "aliases": [
+                    "Scheme Notebook"
+                ]
+            }
+        ],
+        "grammars": [
+            {
+                "language": "racket-notebook-cell",
+                "scopeName": "source.racket-notebook-cell",
+                "path": "./syntaxes/racket-proxy.tmLanguage.json"
+            },
+            {
+                "language": "scheme-notebook-cell",
+                "scopeName": "source.scheme-notebook-cell",
+                "path": "./syntaxes/scheme-proxy.tmLanguage.json"
             }
         ],
         "notebooks": [
             {
                 "type": "scheme-notebook",
+                "viewType": "scheme-notebook",
                 "displayName": "Scheme Notebook",
                 "selector": [
                     {
@@ -169,17 +194,22 @@
         "compile": "tsc -p ./",
         "watch": "tsc -watch -p ./",
         "lint": "eslint src --ext ts",
-        "test": "jest --detectOpenHandles"
+        "test": "jest --detectOpenHandles",
+        "test-integration": "npm run compile && vscode-test"
     },
     "devDependencies": {
         "@types/jest": "^30.0.0",
+        "@types/mocha": "^10.0.10",
         "@types/node": "16.x",
         "@types/vscode": "^1.75.0",
         "@typescript-eslint/eslint-plugin": "^5.53.0",
         "@typescript-eslint/parser": "^5.53.0",
+        "@vscode/test-cli": "^0.0.12",
+        "@vscode/test-electron": "^2.5.2",
         "@vscode/vsce": "^3.7.1",
         "eslint": "^8.34.0",
         "jest": "^30.3.0",
+        "mocha": "^11.7.5",
         "ts-jest": "^29.4.9",
         "typescript": "^5.3.3"
     },
