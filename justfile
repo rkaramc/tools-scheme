@@ -54,6 +54,11 @@ publish:
     just test lsp
     just test vscode
 
+# Run integration tests (requires VS Code to be installed)
+integration-test:
+    @Write-Host ">>> Running VSCode Integration Tests"
+    cd editors/vscode; npm run test-integration > test-vscode-output.txt 2>&1
+
 # Run tests for LSP or VS Code extension
 # Examples:
 #   just test lsp
