@@ -55,7 +55,7 @@ publish:
     just test vscode
 
 # Run integration tests (requires VS Code to be installed)
-integration-test:
+integration-test: debug
     @Write-Host ">>> Running VSCode Integration Tests"
     cd editors/vscode; npm run test-integration > test-vscode-output.txt 2>&1
 
