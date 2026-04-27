@@ -523,3 +523,52 @@ fn test_notebook_state_persistence() {
     assert!(found_redefined, "Cell 3 could not redefine variable x");
 }
 
+#[test]
+fn test_code_action() {
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize();
+
+    let did_open = r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///test.rkt","languageId":"racket","version":1,"text":"(+ 1 2)"}}}"#;
+    lsp.write_message(did_open);
+
+    let req = r#"{"jsonrpc":"2.0","id":100,"method":"textDocument/codeAction","params":{"textDocument":{"uri":"file:///test.rkt"},"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"context":{"diagnostics":[]}}}"#;
+    lsp.write_message(req);
+
+    let mut found_resp = false;
+    for _ in 0..10 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break,
+        };
+        if body.contains("\"id\":100") {
+            assert!(body.contains("scheme.evaluate"), "Expected evaluate command in code actions, got: {}", body);
+            found_resp = true;
+            break;
+        }
+    }
+    assert!(found_resp, "Did not receive codeAction response");
+}
+
+#[test]
+fn test_unknown_execute_command() {
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize();
+
+    let req = r#"{"jsonrpc":"2.0","id":101,"method":"workspace/executeCommand","params":{"command":"unknown.command","arguments":[]}}"#;
+    lsp.write_message(req);
+
+    let mut found_resp = false;
+    for _ in 0..10 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break,
+        };
+        if body.contains("\"id\":101") {
+            assert!(body.contains("\"result\":null"), "Expected null result for unknown command, got: {}", body);
+            found_resp = true;
+            break;
+        }
+    }
+    assert!(found_resp, "Did not receive response for unknown command");
+}
+

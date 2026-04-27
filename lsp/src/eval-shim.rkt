@@ -6,7 +6,7 @@
 (define MAX-CACHE-SIZE (make-parameter 100))
 (define MAX-OUTPUT-SIZE (make-parameter 10000))
 
-(define real-stdout (current-output-port))
+(define current-repl-output-port (make-parameter (current-output-port)))
 (define file-content-cache (make-hash))
 (define cache-access-log (make-hash))
 (define document-evaluators (make-hash))
@@ -71,10 +71,10 @@
   (define result-str
     (cond
       [snip "Rich media"]
-      [else (truncate-string (if (exn? val) (exn-message val) (format "~v" val)) MAX-OUTPUT-SIZE)]))
+      [else (truncate-string (if (exn? val) (exn-message val) (format "~v" val)) (MAX-OUTPUT-SIZE))]))
   
   (define output-str
-    (truncate-string output MAX-OUTPUT-SIZE))
+    (truncate-string output (MAX-OUTPUT-SIZE)))
 
   (define base
     (hash-set* range
@@ -85,10 +85,10 @@
   ;; For rich media, also emit a dedicated rich payload if it's a snip
   (when snip
     (define rich (hash 'type "rich" 'mime "image/png" 'data (snip->base64-png val)))
-    (displayln (jsexpr->string rich) real-stdout))
+    (displayln (jsexpr->string rich) (current-repl-output-port)))
 
-  (displayln (jsexpr->string base) real-stdout)
-  (flush-output real-stdout))
+  (displayln (jsexpr->string base) (current-repl-output-port))
+  (flush-output (current-repl-output-port)))
 
 (define (get-syntax-end stx)
   ;; Note: This function provides simplified placeholder coordinates (assuming single-line spans).
@@ -280,7 +280,7 @@
     (define span (or (syntax-span stx) 0))
     (define pos (or (syntax-position stx) 1))
     (define range (hash-set (make-range start-line start-col end-line end-col span pos) 'type "range"))
-    (displayln (jsexpr->string range) real-stdout))
+    (displayln (jsexpr->string range) (current-repl-output-port)))
 
   (for-each-syntax port source emit-ranges))
 
@@ -327,8 +327,8 @@
    (lambda (s start end non-block? breakable?)
      (define str (bytes->string/utf-8 (subbytes s start end) #\?))
      (define msg (hash 'type "output" 'stream (symbol->string type) 'data str 'uri uri))
-     (displayln (jsexpr->string msg) real-stdout)
-     (flush-output real-stdout)
+     (displayln (jsexpr->string msg) (current-repl-output-port))
+     (flush-output (current-repl-output-port))
      (- end start))
    void))
 
@@ -420,8 +420,8 @@
       (unless (eof-object? input)
         (with-handlers ([exn:fail? (lambda (e)
                                      (display-result (make-range 1 0 1 0 0 1) e #:is-error #t)
-                                     (displayln "READY" real-stdout)
-                                     (flush-output real-stdout)
+                                     (displayln "READY" (current-repl-output-port))
+                                     (flush-output (current-repl-output-port))
                                      (loop))])
           (let* ([json-input (string->jsexpr input)]
                  [type (hash-ref json-input 'type)]
@@ -434,30 +434,30 @@
                       (lambda ()
                         (with-handlers ([exn:break? (lambda (e)
                                                       (display-result (make-range 1 0 1 0 0 1) (make-exn:fail "Evaluation cancelled" (current-continuation-marks)) #:is-error #t)
-                                                      (displayln "READY" real-stdout)
-                                                      (flush-output real-stdout))]
+                                                      (displayln "READY" (current-repl-output-port))
+                                                      (flush-output (current-repl-output-port)))]
                                         [exn:fail? (lambda (e)
                                                      ;; Fallback just in case, but evaluate-string-content already catches most exn:fail?
-                                                     (displayln "READY" real-stdout)
-                                                     (flush-output real-stdout))])
+                                                     (displayln "READY" (current-repl-output-port))
+                                                     (flush-output (current-repl-output-port)))])
                           (evaluate-string-content (hash-ref json-input 'content) uri)
-                          (displayln "READY" real-stdout)
-                          (flush-output real-stdout)))))]
+                          (displayln "READY" (current-repl-output-port))
+                          (flush-output (current-repl-output-port))))))]
               [(string=? type "cancel-evaluation")
                (when current-evaluator
                  (break-evaluator current-evaluator))]
               [(string=? type "parse")
                (parse-string-content (hash-ref json-input 'content) uri)
-               (displayln "READY" real-stdout)
-               (flush-output real-stdout)]
+               (displayln "READY" (current-repl-output-port))
+               (flush-output (current-repl-output-port))]
               [(string=? type "clear-namespace")
                (when uri (hash-remove! document-evaluators uri))
-               (displayln "READY" real-stdout)
-               (flush-output real-stdout)]
+               (displayln "READY" (current-repl-output-port))
+               (flush-output (current-repl-output-port))]
               [else
                (eprintf "Unknown REPL command type: ~a\n" type)
-               (displayln "READY" real-stdout)
-               (flush-output real-stdout)])))
+               (displayln "READY" (current-repl-output-port))
+               (flush-output (current-repl-output-port))])))
         (loop)))))
 
 (define (reset-cache!)
@@ -539,5 +539,107 @@
       (check-equal? (hash-count file-content-cache) 2)
       (check-false (hash-has-key? file-content-cache "source3"))
       (check-true (hash-has-key? file-content-cache "source2"))
-      (check-true (hash-has-key? file-content-cache "source4")))))
+      (check-true (hash-has-key? file-content-cache "source4"))))
 
+  (test-case "evaluate-file"
+    (let ([tmp (make-temporary-file "test-eval-file-~a.rkt")])
+      (with-output-to-file tmp #:exists 'replace
+        (lambda () (displayln "#lang racket\n(define x 10)\n(+ x 5)")))
+      (let ([out-port (open-output-string)])
+        (parameterize ([current-repl-output-port out-port])
+          (evaluate-file (path->string tmp)))
+        (check-regexp-match #px"\"result\":\"15\"" (get-output-string out-port)))
+      (delete-file tmp)))
+
+  (test-case "REPL unknown command"
+    (let* ([in-port (open-input-string "{\"type\": \"unknown\", \"uri\": \"test\"}\n")]
+           [out-port (open-output-string)])
+      (parameterize ([current-repl-output-port out-port]
+                     [current-input-port in-port])
+        (run-repl))
+      (check-regexp-match #px"READY\n" (get-output-string out-port))))
+
+  (test-case "REPL malformed JSON"
+    (let* ([in-port (open-input-string "not json\n")]
+           [out-port (open-output-string)])
+      (parameterize ([current-repl-output-port out-port]
+                     [current-input-port in-port])
+        (run-repl))
+      (let ([output (get-output-string out-port)])
+        (check-regexp-match #px"\"is_error\":true" output)
+        (check-regexp-match #px"READY\n" output)))
+    ;; Reset error handling for next tests
+    (void))
+
+  (test-case "REPL clear-namespace"
+    (let* ([in-port (open-input-string "{\"type\": \"clear-namespace\", \"uri\": \"test-uri\"}\n")]
+           [out-port (open-output-string)])
+      (hash-set! document-evaluators "test-uri" 'some-evaluator)
+      (parameterize ([current-repl-output-port out-port]
+                     [current-input-port in-port])
+        (run-repl))
+      (check-regexp-match #px"READY\n" (get-output-string out-port))
+      (check-false (hash-has-key? document-evaluators "test-uri"))))
+
+  (test-case "REPL parse"
+    (let* ([in-port (open-input-string "{\"type\": \"parse\", \"uri\": \"test-uri\", \"content\": \"(define x 1)\"}\n")]
+           [out-port (open-output-string)])
+      (parameterize ([current-repl-output-port out-port]
+                     [current-input-port in-port])
+        (run-repl))
+      (let ([output (get-output-string out-port)])
+        (check-regexp-match #px"\"type\":\"range\"" output)
+        (check-regexp-match #px"READY\n" output))))
+
+  (test-case "REPL evaluate and cancel"
+    ;; We use a thread to run the REPL and pipes to communicate with it
+    (let*-values ([(in-rd in-wr) (make-pipe)]
+                  [(out-port) (open-output-string)])
+      (let ([repl-thread 
+             (thread
+              (lambda ()
+                (parameterize ([current-repl-output-port out-port]
+                               [current-input-port in-rd])
+                  (run-repl))))])
+        
+        ;; 1. Test successful evaluation
+        (displayln "{\"type\": \"evaluate\", \"uri\": \"test-eval\", \"content\": \"(+ 1 2)\"}" in-wr)
+        (flush-output in-wr)
+        
+        ;; Wait for READY
+        (let loop ([retries 20])
+          (when (and (not (regexp-match? #px"READY\n" (get-output-string out-port)))
+                     (> retries 0))
+            (sleep 0.1)
+            (loop (- retries 1))))
+        
+        (let ([output (get-output-string out-port)])
+          (check-regexp-match #px"\"result\":\"3\"" output)
+          (check-regexp-match #px"READY\n" output))
+        
+        ;; 2. Test cancellation
+        ;; Use a long-running task. We need to be careful with sleep in sandbox.
+        ;; Actually, let's use a simple infinite loop or long sleep if allowed.
+        (displayln "{\"type\": \"evaluate\", \"uri\": \"test-cancel\", \"content\": \"(sleep 5)\"}" in-wr)
+        (flush-output in-wr)
+        
+        (sleep 0.5) ; Give it time to start
+        
+        (displayln "{\"type\": \"cancel-evaluation\", \"uri\": \"test-cancel\"}" in-wr)
+        (flush-output in-wr)
+        
+        ;; Wait for cancellation message and READY
+        (let loop ([retries 20])
+          (when (and (not (regexp-match? #px"Evaluation cancelled" (get-output-string out-port)))
+                     (> retries 0))
+            (sleep 0.1)
+            (loop (- retries 1))))
+            
+        (let ([output (get-output-string out-port)])
+          (check-regexp-match #px"Evaluation cancelled" output)
+          (check-regexp-match #px"READY\n" output))
+        
+        ;; Cleanup
+        (close-output-port in-wr)
+        (sync/timeout 2 repl-thread)
+        (kill-thread repl-thread)))))
