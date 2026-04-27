@@ -725,3 +725,100 @@ fn test_document_lifecycle() {
     assert!(found_empty_hints, "Did not receive empty hints after didClose");
 }
 
+#[test]
+fn test_notebook_concurrency() {
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize();
+
+    // Send 3 evaluations rapidly
+    for i in 0..3 {
+        let eval_cell = format!(r#"{{"jsonrpc":"2.0","method":"scheme/notebook/evalCell","params":{{"uri":"file:///nb_conc.rkt","code":"(+ {} 10)","executionId":{}}}}}"#, i, i);
+        lsp.write_message(&eval_cell);
+    }
+
+    let mut finished_count = 0;
+    let mut results = Vec::new();
+
+    for _ in 0..30 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break,
+        };
+        
+        if body.contains("scheme/notebook/outputStream") && body.contains("\"type\":\"result\"") {
+            results.push(body.clone());
+        }
+        
+        if body.contains("scheme/notebook/evalFinished") {
+            finished_count += 1;
+        }
+        
+        if finished_count == 3 {
+            break;
+        }
+    }
+
+    assert_eq!(finished_count, 3, "Not all evaluations finished");
+    assert_eq!(results.len(), 3, "Did not receive all results");
+    
+    // Verify values: 10, 11, 12
+    let mut values: Vec<String> = results.iter()
+        .map(|r| {
+            let v: serde_json::Value = serde_json::from_str(r).unwrap();
+            v["params"]["payload"]["data"].as_str().unwrap().to_string()
+        })
+        .collect();
+    values.sort();
+    assert_eq!(values, vec!["10", "11", "12"]);
+}
+
+#[test]
+fn test_notebook_uri_isolation() {
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize();
+
+    // 1. Define x in Notebook A
+    let eval_a = r#"{"jsonrpc":"2.0","method":"scheme/notebook/evalCell","params":{"uri":"file:///cell1.rkt","notebookUri":"file:///notebook_a.rktnb","code":"(define x 100)","executionId":1}}"#;
+    lsp.write_message(eval_a);
+    
+    // Wait for finished
+    for _ in 0..10 {
+        let body = lsp.read_message_timeout(Duration::from_secs(5)).unwrap();
+        if body.contains("scheme/notebook/evalFinished") && body.contains("\"executionId\":1") { break; }
+    }
+
+    // 2. Try to access x in Notebook B
+    let eval_b = r#"{"jsonrpc":"2.0","method":"scheme/notebook/evalCell","params":{"uri":"file:///cell2.rkt","notebookUri":"file:///notebook_b.rktnb","code":"x","executionId":2}}"#;
+    lsp.write_message(eval_b);
+
+    let mut found_error = false;
+    for _ in 0..10 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break,
+        };
+        if body.contains("scheme/notebook/outputStream") && body.contains("\"type\":\"error\"") && body.contains("undefined") {
+            found_error = true;
+            break;
+        }
+    }
+    assert!(found_error, "Notebook B should NOT be able to access variable from Notebook A");
+
+    // 3. Access x in Notebook A again
+    let eval_a2 = r#"{"jsonrpc":"2.0","method":"scheme/notebook/evalCell","params":{"uri":"file:///cell3.rkt","notebookUri":"file:///notebook_a.rktnb","code":"(+ x 5)","executionId":3}}"#;
+    lsp.write_message(eval_a2);
+
+    let mut found_result = false;
+    for _ in 0..10 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break,
+        };
+        if body.contains("scheme/notebook/outputStream") && body.contains("\"type\":\"result\"") && body.contains("105") {
+            found_result = true;
+            break;
+        }
+    }
+    assert!(found_result, "Notebook A should be able to access its own variables");
+}
+
