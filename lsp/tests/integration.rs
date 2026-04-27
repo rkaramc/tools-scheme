@@ -632,3 +632,96 @@ fn test_evaluate_file_stdin() {
     assert!(stdout.contains("hello"), "Expected output 'hello', got: {}", stdout);
 }
 
+#[test]
+fn test_document_lifecycle() {
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize();
+
+    let uri = "file:///lifecycle.rkt";
+    
+    // 1. didOpen
+    let did_open = format!(r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{}","languageId":"racket","version":1,"text":"(+ 1 2)"}}}}}}"#, uri);
+    lsp.write_message(&did_open);
+
+    // Evaluate to get a hint
+    let exec_cmd = format!(r#"{{"jsonrpc":"2.0","id":300,"method":"workspace/executeCommand","params":{{"command":"scheme.evaluate","arguments":["{}"]}}}}"#, uri);
+    lsp.write_message(&exec_cmd);
+
+    // Wait for diagnostics (evaluation finished)
+    let mut found_diag = false;
+    for _ in 0..15 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break,
+        };
+        if body.contains("textDocument/publishDiagnostics") && body.contains("lifecycle.rkt") {
+            found_diag = true;
+            break;
+        }
+    }
+    assert!(found_diag, "Did not receive diagnostics after open+eval");
+
+    // Verify hint exists at character 7
+    let hint_req = format!(r#"{{"jsonrpc":"2.0","id":301,"method":"textDocument/inlayHint","params":{{"textDocument":{{"uri":"{}"}},"range":{{"start":{{"line":0,"character":0}},"end":{{"line":1,"character":0}}}}}}}}"#, uri);
+    lsp.write_message(&hint_req);
+    
+    let mut found_hint = false;
+    for _ in 0..10 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break,
+        };
+        if body.contains("\"id\":301") {
+            assert!(body.contains("\"character\":7"), "Expected hint at character 7, got: {}", body);
+            found_hint = true;
+            break;
+        }
+    }
+    assert!(found_hint, "Did not receive inlay hint");
+
+    // 2. didChange - Insert a newline at the start
+    let did_change = format!(r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":"{}","version":2}},"contentChanges":[{{"text":"\n(+ 1 2)"}}]}}}}"#, uri);
+    lsp.write_message(&did_change);
+
+    // Hint should now be at line 1, character 7 due to shift_results
+    let hint_req2 = format!(r#"{{"jsonrpc":"2.0","id":302,"method":"textDocument/inlayHint","params":{{"textDocument":{{"uri":"{}"}},"range":{{"start":{{"line":0,"character":0}},"end":{{"line":2,"character":0}}}}}}}}"#, uri);
+    lsp.write_message(&hint_req2);
+
+    let mut found_shifted_hint = false;
+    for _ in 0..10 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break,
+        };
+        if body.contains("\"id\":302") {
+            assert!(body.contains("\"line\":1"), "Expected hint shifted to line 1, got: {}", body);
+            assert!(body.contains("\"character\":7"), "Expected hint still at character 7, got: {}", body);
+            found_shifted_hint = true;
+            break;
+        }
+    }
+    assert!(found_shifted_hint, "Did not receive shifted inlay hint after didChange");
+
+    // 3. didClose
+    let did_close = format!(r#"{{"jsonrpc":"2.0","method":"textDocument/didClose","params":{{"textDocument":{{"uri":"{}"}}}}}}"#, uri);
+    lsp.write_message(&did_close);
+
+    // Request hints again - should be empty
+    let hint_req3 = format!(r#"{{"jsonrpc":"2.0","id":303,"method":"textDocument/inlayHint","params":{{"textDocument":{{"uri":"{}"}},"range":{{"start":{{"line":0,"character":0}},"end":{{"line":2,"character":0}}}}}}}}"#, uri);
+    lsp.write_message(&hint_req3);
+
+    let mut found_empty_hints = false;
+    for _ in 0..10 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break,
+        };
+        if body.contains("\"id\":303") {
+            assert!(body.contains("\"result\":[]"), "Expected empty hints after didClose, got: {}", body);
+            found_empty_hints = true;
+            break;
+        }
+    }
+    assert!(found_empty_hints, "Did not receive empty hints after didClose");
+}
+
