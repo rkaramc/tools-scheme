@@ -572,3 +572,63 @@ fn test_unknown_execute_command() {
     assert!(found_resp, "Did not receive response for unknown command");
 }
 
+#[test]
+fn test_lang_fallback() {
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize();
+
+    // Use a nonexistent language. read-syntax might still work if we use a mock module structure,
+    // but the shim's read-syntax for #lang will likely fail if the reader is missing.
+    // Instead, we'll test that even if the language require fails, we get some diagnostics.
+    let text = "#lang nonexistent\n(+ 1 2)";
+    let did_open = format!(r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"file:///fallback.rkt","languageId":"racket","version":1,"text":"{}"}}}}}}"#, text.replace("\n", "\\n"));
+    lsp.write_message(&did_open);
+
+    let exec_cmd = r#"{"jsonrpc":"2.0","id":200,"method":"workspace/executeCommand","params":{"command":"scheme.evaluate","arguments":["file:///fallback.rkt"]}}"#;
+    lsp.write_message(exec_cmd);
+
+    let mut found_error = false;
+    for _ in 0..15 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break,
+        };
+        if body.contains("textDocument/publishDiagnostics") && body.contains("fallback.rkt") {
+            if body.contains("\"is_error\":true") || body.contains("\"severity\":1") {
+                found_error = true;
+                break;
+            }
+        }
+    }
+    assert!(found_error, "Should have received error diagnostics for nonexistent language");
+}
+
+#[test]
+fn test_evaluate_file_stdin() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    // Find the Racket binary. In tests, we can assume 'racket' is in PATH.
+    // Or we can find our shim.
+    let shim_path = std::env::current_dir().unwrap().join("src/eval-shim.rkt");
+    
+    let mut child = Command::new("racket")
+        .arg(shim_path)
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn racket");
+
+    let mut stdin = child.stdin.take().expect("Failed to open stdin");
+    stdin.write_all(b"(+ 1 2)\n(display \"hello\")").expect("Failed to write to stdin");
+    drop(stdin);
+
+    let output = child.wait_with_output().expect("Failed to wait on child");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    
+    assert!(stdout.contains("\"result\":\"3\""), "Expected result 3, got: {}", stdout);
+    assert!(stdout.contains("hello"), "Expected output 'hello', got: {}", stdout);
+}
+
