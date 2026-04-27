@@ -94,3 +94,68 @@ impl DocumentStore {
         self.documents.values_mut()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lsp_types::Uri;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_document_store_lifecycle() {
+        let mut store = DocumentStore::new();
+        let uri = "file:///test.rkt";
+        let item = TextDocumentItem {
+            uri: Uri::from_str(uri).unwrap(),
+            language_id: "racket".to_string(),
+            version: 1,
+            text: "(define x 1)".to_string(),
+        };
+
+        store.open(item);
+        
+        {
+            let doc = store.get(uri).expect("Document should be in store");
+            assert_eq!(doc.version, 1);
+            assert_eq!(doc.text, "(define x 1)");
+        }
+
+        let new_text = "(define x 2)".to_string();
+        let new_idx = LineIndex::new(&new_text);
+        store.update_text_and_index(uri, 2, new_text.clone(), new_idx);
+
+        {
+            let doc = store.get(uri).expect("Document should still be in store");
+            assert_eq!(doc.version, 2);
+            assert_eq!(doc.text, new_text);
+        }
+
+        store.close(uri);
+        assert!(store.get(uri).is_none());
+    }
+
+    #[test]
+    fn test_document_store_iter() {
+        let mut store = DocumentStore::new();
+        let uri1 = "file:///test1.rkt";
+        let uri2 = "file:///test2.rkt";
+
+        store.open(TextDocumentItem {
+            uri: Uri::from_str(uri1).unwrap(),
+            language_id: "racket".to_string(),
+            version: 1,
+            text: "1".to_string(),
+        });
+        store.open(TextDocumentItem {
+            uri: Uri::from_str(uri2).unwrap(),
+            language_id: "racket".to_string(),
+            version: 1,
+            text: "2".to_string(),
+        });
+
+        let uris: Vec<_> = store.iter().map(|(u, _)| u.clone()).collect();
+        assert_eq!(uris.len(), 2);
+        assert!(uris.contains(&uri1.to_string()));
+        assert!(uris.contains(&uri2.to_string()));
+    }
+}
