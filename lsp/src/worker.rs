@@ -257,6 +257,9 @@ fn on_clear(
     let mut lock = state.write_recovered();
     if let Some(doc) = lock.document_store.get_mut(uri_str) {
         doc.results.clear();
+        evaluator.log(&format!("Cleared results for {}", uri_str));
+    } else {
+        evaluator.log(&format!("Document not found for clear: {}", uri_str));
     }
 
     evaluator.log("Namespace cleared, sending refreshes");
@@ -271,14 +274,29 @@ fn on_restart(
     state: &Arc<RwLock<SharedState>>,
     sender: &crossbeam_channel::Sender<Message>,
 ) {
+    evaluator.log("EvalAction::Restart triggered");
     let _ = evaluator.restart();
-    let mut lock = state.write_recovered();
-    for doc in lock.document_store.iter_mut() {
-        doc.results.clear();
-        doc.ranges.clear();
-    }
     
-    // Trigger refreshes
+    let uris: Vec<String> = {
+        let mut lock = state.write_recovered();
+        let uris: Vec<String> = lock.document_store.iter().map(|(uri, _)| uri.clone()).collect();
+        for doc in lock.document_store.iter_mut() {
+            doc.results.clear();
+            doc.ranges.clear();
+        }
+        uris
+    };
+    
+    evaluator.log(&format!("Restart cleared state for {} documents", uris.len()));
+    
+    // Trigger refreshes for all documents
+    for uri_str in uris {
+        if let Ok(uri) = lsp_types::Uri::from_str(&uri_str) {
+            evaluator.log(&format!("Clearing diagnostics for {}", uri_str));
+            sender.send_diagnostics(uri, Vec::new(), None);
+        }
+    }
+
     sender.refresh_inlay_hints();
     sender.refresh_code_lenses();
 }

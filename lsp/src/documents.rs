@@ -86,6 +86,10 @@ impl DocumentStore {
         self.documents.get_mut(uri)
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &Document)> {
+        self.documents.iter()
+    }
+
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Document> {
         self.documents.values_mut()
     }

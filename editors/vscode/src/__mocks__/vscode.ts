@@ -1,24 +1,62 @@
+import * as vscode from "vscode";
+
 export const workspace = {
     getConfiguration: jest.fn().mockReturnValue({
-        get: jest.fn()
-    })
+        get: jest.fn(),
+        affectsConfiguration: jest.fn().mockReturnValue(false)
+    }),
+    registerNotebookSerializer: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+    onDidOpenTextDocument: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+    onDidChangeConfiguration: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+    createFileSystemWatcher: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+    textDocuments: []
 };
+
 export const window = {
     createOutputChannel: jest.fn().mockReturnValue({
-        appendLine: jest.fn()
+        appendLine: jest.fn(),
+        dispose: jest.fn(),
+        append: jest.fn(),
+        clear: jest.fn(),
+        show: jest.fn(),
+        hide: jest.fn(),
+        replace: jest.fn()
     }),
     showErrorMessage: jest.fn(),
-    showInformationMessage: jest.fn()
+    showInformationMessage: jest.fn(),
+    activeTextEditor: undefined as any
 };
+
 export const commands = {
-    registerCommand: jest.fn()
+    registerCommand: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+    executeCommand: jest.fn()
 };
+
 export const notebooks = {
-    createNotebookController: jest.fn()
+    createNotebookController: jest.fn().mockReturnValue({
+        dispose: jest.fn(),
+        supportedLanguages: [],
+        supportsExecutionOrder: false,
+        executeHandler: undefined,
+        interruptHandler: undefined,
+        createNotebookCellExecution: jest.fn()
+    })
 };
+
+export const languages = {
+    setTextDocumentLanguage: jest.fn(),
+    getDiagnostics: jest.fn().mockReturnValue([])
+};
+
+export const extensions = {
+    getExtension: jest.fn()
+};
+
 export const Uri = {
-    parse: jest.fn()
+    parse: jest.fn().mockImplementation((val) => ({ toString: () => val, fsPath: val })),
+    file: jest.fn().mockImplementation((val) => ({ toString: () => `file://${val}`, fsPath: val }))
 };
+
 export enum ExtensionMode {
     Production = 1,
     Development = 2,
@@ -84,3 +122,36 @@ export interface CancellationToken {
     onCancellationRequested: any;
 }
 
+export class Range {
+    start: Position;
+    end: Position;
+    constructor(startLine: number, startChar: number, endLine: number, endChar: number) {
+        this.start = new Position(startLine, startChar);
+        this.end = new Position(endLine, endChar);
+    }
+}
+
+export class Position {
+    line: number;
+    character: number;
+    constructor(line: number, character: number) {
+        this.line = line;
+        this.character = character;
+    }
+}
+
+export class Location {
+    uri: any;
+    range: Range;
+    constructor(uri: any, range: Range) {
+        this.uri = uri;
+        this.range = range;
+    }
+}
+
+export enum DiagnosticSeverity {
+    Error = 0,
+    Warning = 1,
+    Information = 2,
+    Hint = 3
+}

@@ -57,7 +57,7 @@ enum SchemeCommand {
     #[serde(rename = "scheme.clearNamespace")]
     ClearNamespace((String,)),
     #[serde(rename = "scheme.restartREPL")]
-    RestartREPL,
+    RestartREPL(Vec<serde_json::Value>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -227,9 +227,11 @@ impl Server {
     }
 
     pub fn handle_execute_command(&mut self, connection: &lsp_server::Connection, id: RequestId, params: lsp_types::ExecuteCommandParams) -> Result<(), Box<dyn Error + Sync + Send>> {
-        let cmd: SchemeCommand = match serde_json::from_value(json!(params)) {
+        let cmd_val = json!(params);
+        let cmd: SchemeCommand = match serde_json::from_value(cmd_val.clone()) {
             Ok(c) => c,
-            Err(_) => {
+            Err(e) => {
+                eprintln!("Failed to deserialize SchemeCommand: {}. Params: {}", e, cmd_val);
                 // Not one of our commands, acknowledge and return
                 connection.sender.send(Message::Response(Response::new_ok(id, json!(null))))?;
                 return Ok(());
@@ -237,7 +239,7 @@ impl Server {
         };
 
         let msg_response = match cmd {
-            SchemeCommand::RestartREPL => {
+            SchemeCommand::RestartREPL(_) => {
                 self.send_eval_task(id, EvalTask { uri: "".into(), action: EvalAction::Restart })
             }
             SchemeCommand::ClearNamespace((uri,)) => {
