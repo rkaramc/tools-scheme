@@ -89,6 +89,8 @@ pub fn eval_worker(
             }
         }
     }
+    evaluator.log("Eval worker channel closed, shutting down evaluator");
+    evaluator.shutdown();
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -148,6 +148,11 @@ impl LineIndex {
         lsp_types::Range::new(start_pos, end_pos)
     }
 
+    pub fn get_text_range<'a>(&self, text: &'a str, range: lsp_types::Range) -> &'a str {
+        let start = self.lsp_position_to_byte(text, range.start);
+        let end = self.lsp_position_to_byte(text, range.end);
+        &text[start.min(text.len())..end.min(text.len())]
+    }
 
     fn line_start(&self, line: usize) -> usize {
         self.line_offsets.get(line).copied().unwrap_or_else(|| {

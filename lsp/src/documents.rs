@@ -86,6 +86,14 @@ impl DocumentStore {
         self.documents.get_mut(uri)
     }
 
+    pub fn position_to_byte(&self, uri: &str, pos: lsp_types::Position) -> u32 {
+        if let Some(doc) = self.get(uri) {
+            doc.line_index.lsp_position_to_byte(&doc.text, pos) as u32
+        } else {
+            0
+        }
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&String, &Document)> {
         self.documents.iter()
     }

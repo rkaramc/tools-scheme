@@ -65,7 +65,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     // child process) and is the only thread that ever calls into it.
     let worker_state = Arc::clone(&state);
     let worker_sender = connection.sender.clone();
-    std::thread::spawn(move || {
+    let worker_handle = std::thread::spawn(move || {
         eval_worker(evaluator, eval_rx, cancel_rx, worker_state, worker_sender);
     });
 
@@ -76,7 +76,16 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     };
 
     server.main_loop(&connection)?;
+
+    eprintln!("LSP Main: loop finished, dropping server");
+    drop(server);
+
+    eprintln!("LSP Main: joining worker thread");
+    worker_handle.join().map_err(|_| "Worker thread panicked")?;
+
+    eprintln!("LSP Main: joining IO threads");
     io_threads.join()?;
 
+    eprintln!("LSP Main: shutdown complete");
     Ok(())
-}
+    }

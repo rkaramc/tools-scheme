@@ -822,3 +822,43 @@ fn test_notebook_uri_isolation() {
     assert!(found_result, "Notebook A should be able to access its own variables");
 }
 
+#[test]
+fn test_graceful_shutdown() {
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize();
+
+    // 1. Send shutdown request
+    let shutdown_req = r#"{"jsonrpc":"2.0","id":500,"method":"shutdown","params":null}"#;
+    lsp.write_message(shutdown_req);
+
+    let mut found_resp = false;
+    for _ in 0..10 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break,
+        };
+        if body.contains("\"id\":500") {
+            assert!(body.contains("\"result\":null"), "Expected null result for shutdown, got: {}", body);
+            found_resp = true;
+            break;
+        }
+    }
+    assert!(found_resp, "Did not receive shutdown response");
+
+    // 2. Send exit notification
+    let exit_not = r#"{"jsonrpc":"2.0","method":"exit","params":null}"#;
+    lsp.write_message(exit_not);
+    lsp.close_stdin();
+
+    // Wait for process to exit
+    let mut exited = false;
+    for _ in 0..10 {
+        if lsp.child.try_wait().unwrap().is_some() {
+            exited = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(exited, "LSP process did not exit after exit notification");
+}
+
