@@ -51,5 +51,23 @@ publish:
     Write-Host "Note: Publication involves manual steps and registry setup."
     Write-Host "Please refer to publish_guide.md for the full checklist."
     # Add automated pre-checks here
-    cd lsp; cargo test
-    cd editors/vscode; npm test
+    just test lsp
+    just test vscode
+
+# Run tests for LSP or VS Code extension
+# Examples:
+#   just test lsp
+#   just test vscode src/tests/utils.test.ts
+#   just test lsp -- --nocapture
+test target="all" *args:
+    @if ("{{target}}" -eq "lsp") { \
+        cd lsp; cargo test {{args}} \
+    } elseif ("{{target}}" -eq "vscode") { \
+        cd editors/vscode; npm test {{args}} > test-vscode-output.txt 2>&1 \
+    } elseif ("{{target}}" -eq "all") { \
+        Write-Host ">>> Testing LSP"; cd lsp; cargo test; \
+        Write-Host ">>> Testing VSCode Extension"; cd editors/vscode; npm test > test-vscode-output.txt 2>&1 \
+    } else { \
+        Write-Host "Error: Unknown test target '{{target}}'. Use 'lsp', 'vscode', or 'all'."; \
+        exit 1 \
+    }
