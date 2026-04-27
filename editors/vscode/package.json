@@ -194,7 +194,7 @@
         "compile": "tsc -p ./",
         "watch": "tsc -watch -p ./",
         "lint": "eslint src --ext ts",
-        "test": "jest --detectOpenHandles",
+        "test": "jest --detectOpenHandles --no-color",
         "test-integration": "npm run compile && vscode-test"
     },
     "devDependencies": {
