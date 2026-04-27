@@ -69,10 +69,13 @@ test target="all" *args:
         cd lsp; cargo test {{args}} \
     } elseif ("{{target}}" -eq "vscode") { \
         cd editors/vscode; npm test {{args}} > test-vscode-output.txt 2>&1 \
+    } elseif ("{{target}}" -eq "racket") { \
+        raco test lsp/src/eval-shim.rkt \
     } elseif ("{{target}}" -eq "all") { \
-        Write-Host ">>> Testing LSP"; cd lsp; cargo test; \
-        Write-Host ">>> Testing VSCode Extension"; cd editors/vscode; npm test > test-vscode-output.txt 2>&1 \
+        Write-Host ">>> Testing LSP (Rust)"; cd lsp; cargo test; \
+        Write-Host ">>> Testing VSCode Extension (TypeScript)"; cd editors/vscode; npm test > test-vscode-output.txt 2>&1; \
+        Write-Host ">>> Testing Eval-Shim (Racket)"; raco test lsp/src/eval-shim.rkt \
     } else { \
-        Write-Host "Error: Unknown test target '{{target}}'. Use 'lsp', 'vscode', or 'all'."; \
+        Write-Host "Error: Unknown test target '{{target}}'. Use 'lsp', 'vscode', 'racket', or 'all'."; \
         exit 1 \
     }

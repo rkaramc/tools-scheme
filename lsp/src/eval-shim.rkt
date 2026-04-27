@@ -3,8 +3,8 @@
 (require json racket/exn racket/sandbox racket/snip racket/class racket/draw net/base64)
 
 (define cache-counter 0)
-(define MAX-CACHE-SIZE 100)
-(define MAX-OUTPUT-SIZE 10000)
+(define MAX-CACHE-SIZE (make-parameter 100))
+(define MAX-OUTPUT-SIZE (make-parameter 10000))
 
 (define real-stdout (current-output-port))
 (define file-content-cache (make-hash))
@@ -32,7 +32,7 @@
   (hash-set! file-content-cache source content)
 
   ;; Evict if too large
-  (when (> (hash-count file-content-cache) MAX-CACHE-SIZE)
+  (when (> (hash-count file-content-cache) (MAX-CACHE-SIZE))
     (define-values (oldest-source _)
       (for/fold ([min-s #f] [min-v +inf.0])
                 ([(s v) (in-hash cache-access-log)])
@@ -293,16 +293,15 @@
     (when (< i (bytes-length bytes))
       (define b (bytes-ref bytes i))
       (if (and (= b 37)                        ; #\%
-               (< (+ i 2) (bytes-length bytes))
-               (hex-digit? (integer->char (bytes-ref bytes (+ i 1))))
-               (hex-digit? (integer->char (bytes-ref bytes (+ i 2)))))
-          (begin
-            (write-byte (string->number
-                         (string (integer->char (bytes-ref bytes (+ i 1)))
-                                 (integer->char (bytes-ref bytes (+ i 2))))
-                         16)
-                        out)
-            (loop (+ i 3)))
+               (< (+ i 2) (bytes-length bytes)))
+          (let ([h1 (integer->char (bytes-ref bytes (+ i 1)))]
+                [h2 (integer->char (bytes-ref bytes (+ i 2)))])
+            (if (and (hex-digit? h1) (hex-digit? h2))
+                (let ([num (string->number (string h1 h2) 16)])
+                  (if num
+                      (begin (write-byte num out) (loop (+ i 3)))
+                      (begin (write-byte b out) (loop (+ i 1)))))
+                (begin (write-byte b out) (loop (+ i 1)))))
           (begin
             (write-byte b out)
             (loop (+ i 1))))))
@@ -461,6 +460,11 @@
                (flush-output real-stdout)])))
         (loop)))))
 
+(define (reset-cache!)
+  (hash-clear! file-content-cache)
+  (hash-clear! cache-access-log)
+  (set! cache-counter 0))
+
 (module+ main
   (require racket/cmdline)
   (command-line
@@ -469,3 +473,71 @@
     [("--repl") "Run in persistent REPL mode" (run-repl) (exit 0)]
     #:args (filename)
     (evaluate-file filename)))
+
+(module+ test
+  (require rackunit)
+  
+  (test-case "truncate-string"
+    (check-equal? (truncate-string "hello" 10) "hello")
+    (check-equal? (truncate-string "hello world" 5) "hello... [truncated]"))
+
+  (test-case "make-range"
+    (let ([r (make-range 1 2 3 4 5 6)])
+      (check-equal? (hash-ref r 'line) 1)
+      (check-equal? (hash-ref r 'col) 2)
+      (check-equal? (hash-ref r 'end_line) 3)
+      (check-equal? (hash-ref r 'end_col) 4)
+      (check-equal? (hash-ref r 'span) 5)
+      (check-equal? (hash-ref r 'pos) 6))
+    (let ([r (make-range #f #f #f #f #f #f)])
+      (check-equal? (hash-ref r 'line) 1)
+      (check-equal? (hash-ref r 'col) 0)
+      (check-equal? (hash-ref r 'end_line) 1)
+      (check-equal? (hash-ref r 'end_col) 999)
+      (check-equal? (hash-ref r 'span) 0)
+      (check-equal? (hash-ref r 'pos) 1)))
+
+  (test-case "uri-decode"
+    (check-equal? (uri-decode "hello%20world") "hello world")
+    (check-equal? (uri-decode "path%2Fto%2Ffile") "path/to/file")
+    (check-equal? (uri-decode "C%3A%5CUsers") "C:\\Users")
+    (check-equal? (uri-decode "plain") "plain")
+    (check-equal? (uri-decode "trailing%") "trailing%")
+    (check-equal? (uri-decode "invalid%2G") "invalid%2G"))
+
+  (test-case "uri->path"
+    (check-false (uri->path "not-a-uri"))
+    (check-false (uri->path "http://google.com"))
+    (if (eq? 'windows (system-type 'os))
+        (begin
+          (check-equal? (uri->path "file:///C%3A/Users/test.rkt") (string->path "C:\\Users\\test.rkt"))
+          (check-equal? (uri->path "file:///D:/source/tools.rkt") (string->path "D:\\source\\tools.rkt")))
+        (begin
+          (check-equal? (uri->path "file:///home/user/test.rkt") (string->path "/home/user/test.rkt"))
+          (check-equal? (uri->path "file:///var/log/sys.log") (string->path "/var/log/sys.log")))))
+
+  (test-case "LRU cache behavior"
+    (reset-cache!)
+    
+    (parameterize ([MAX-CACHE-SIZE 2])
+      (cache-content! "content1" "source1")
+      (cache-content! "content2" "source2")
+      (check-equal? (hash-count file-content-cache) 2)
+      
+      ;; Source1 is oldest. Adding source3 should evict source1.
+      (cache-content! "content3" "source3")
+      (check-equal? (hash-count file-content-cache) 2)
+      (check-false (hash-has-key? file-content-cache "source1"))
+      (check-true (hash-has-key? file-content-cache "source2"))
+      (check-true (hash-has-key? file-content-cache "source3"))
+      
+      ;; Access source2 to make it newer than source3
+      (get-cached-content "source2")
+      
+      ;; Now source3 is oldest. Adding source4 should evict source3.
+      (cache-content! "content4" "source4")
+      (check-equal? (hash-count file-content-cache) 2)
+      (check-false (hash-has-key? file-content-cache "source3"))
+      (check-true (hash-has-key? file-content-cache "source2"))
+      (check-true (hash-has-key? file-content-cache "source4")))))
+
