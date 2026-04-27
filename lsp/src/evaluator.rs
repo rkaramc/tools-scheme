@@ -57,7 +57,11 @@ pub struct Evaluator {
 
 impl Evaluator {
     pub fn new(racket_path: Option<String>) -> Result<Self> {
-        let temp_dir = std::env::temp_dir().join(TEMP_SUBDIR);
+        let temp_dir = if std::env::var("TOOLS_SCHEME_TEST").is_ok() {
+            std::env::current_dir()?
+        } else {
+            std::env::temp_dir().join(TEMP_SUBDIR)
+        };
         std::fs::create_dir_all(&temp_dir)?;
 
         // Use project-specific session name instead of random suffix
@@ -113,6 +117,13 @@ impl Evaluator {
     #[allow(unused)]
     pub fn racket_path(&self) -> &str {
         &self.racket_path
+    }
+
+    pub fn shutdown(&mut self) {
+        if let Some(mut state) = self.state.take() {
+            let _ = state.child.kill();
+            let _ = state.child.wait();
+        }
     }
 
     #[allow(unused)]

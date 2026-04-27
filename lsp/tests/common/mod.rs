@@ -7,7 +7,7 @@ use std::thread;
 
 pub struct LspProcess {
     pub child: Child,
-    pub stdin: std::process::ChildStdin,
+    pub stdin: Option<std::process::ChildStdin>,
     pub rx: Receiver<String>,
 }
 
@@ -70,12 +70,18 @@ impl LspProcess {
             }
         });
 
-        Self { child, stdin, rx }
+        Self { child, stdin: Some(stdin), rx }
     }
 
     pub fn write_message(&mut self, msg: &str) {
-        write!(self.stdin, "Content-Length: {}\r\n\r\n{}", msg.len(), msg).unwrap();
-        self.stdin.flush().unwrap();
+        if let Some(ref mut stdin) = self.stdin {
+            write!(stdin, "Content-Length: {}\r\n\r\n{}", msg.len(), msg).unwrap();
+            stdin.flush().unwrap();
+        }
+    }
+
+    pub fn close_stdin(&mut self) {
+        self.stdin.take();
     }
 
     pub fn read_message(&mut self) -> String {
