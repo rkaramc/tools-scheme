@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
 import { SchemeNotebookSerializer } from '../notebookSerializer';
 
+// Mocking vscode module
+jest.mock('vscode', () => jest.requireActual('../__mocks__/vscode'), { virtual: true });
+
 describe('SchemeNotebookSerializer', () => {
     let serializer: SchemeNotebookSerializer;
     const token: vscode.CancellationToken = {
@@ -73,5 +76,37 @@ describe('SchemeNotebookSerializer', () => {
         const text = new TextDecoder().decode(content);
 
         expect(text).toBe('#lang racket\n(+ 1 2)\n\n#| markdown\nHello\n|#\n\n(+ 3 4)\n');
+    });
+
+    describe('Edge Cases', () => {
+        it('handles unclosed markdown blocks', async () => {
+            const text = `#lang racket\n#| markdown\nThis never ends`;
+            const content = new TextEncoder().encode(text);
+            const data = await serializer.deserializeNotebook(content, token);
+
+            expect(data.cells.length).toBe(2);
+            expect(data.cells[1].kind).toBe(vscode.NotebookCellKind.Markup);
+            expect(data.cells[1].value).toBe('This never ends');
+        });
+
+        it('handles markdown header without newline', async () => {
+            const text = `#| markdown Inline content |#`;
+            const content = new TextEncoder().encode(text);
+            const data = await serializer.deserializeNotebook(content, token);
+
+            expect(data.cells.length).toBe(1);
+            expect(data.cells[0].kind).toBe(vscode.NotebookCellKind.Markup);
+            expect(data.cells[0].value).toBe('Inline content');
+        });
+
+        it('handles multiple consecutive markdown blocks', async () => {
+            const text = `#| markdown 1 |#\n#| markdown 2 |#`;
+            const content = new TextEncoder().encode(text);
+            const data = await serializer.deserializeNotebook(content, token);
+
+            expect(data.cells.length).toBe(2);
+            expect(data.cells[0].value).toBe('1');
+            expect(data.cells[1].value).toBe('2');
+        });
     });
 });
