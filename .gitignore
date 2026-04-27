@@ -48,3 +48,6 @@ global.session
 
 # bv (beads viewer) local config and caches
 .bv/
+
+# Agent files
+GEMINI.md

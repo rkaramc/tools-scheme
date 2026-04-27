@@ -9,8 +9,8 @@ Welcome to the **Tools Scheme** repository. This document provides essential con
 
 ## Tooling
 
-- **`.agents/workflows/`**: Machine-readable and human-readable guides for specific tasks.
-- **`.beads/`**: Issue tracking using the [Beads](https://github.com/steveyegge/beads) system. (Agents MUST use the non-interactive `bd` command for issues, e.g., `bd list` or `bd show`. Do not use the interactive `bv` command.)
+- **Beads**: Issue tracking using the [Beads](https://github.com/steveyegge/beads) system. Agents should check the `beads-tracking` skill for instructions.
+- **Jujutsu**: (also known as `jj` or `jj-vcs`) Version control using the [Jujutsu](https://docs.jj-vcs.dev/) system. Agents should check the `jj-vcs` skill for instructions.
 
 > [!NOTE]
 > Tooling preferences (e.g., JJ vs Git) are managed via personal overrides in `.agents/local.md`. Agents should check for that file for user-specific workflow instructions.
@@ -22,6 +22,8 @@ Agents should favor following standardized workflows located in `.agents/workflo
 - **Bug Fixing**: Use the `fix-bead.md` workflow (triggered via `/fix-bead <issue-id>`). This workflow emphasizes investigation, TDD, and JJ-based context management.
 
 ## Karpathy Guidelines (Repository-Wide)
+
+More information in the `karpathy-guidelines` skill.
 
 - **Simplicity First**: Implement ONLY what is requested.
 - **Surgical Changes**: Minimize diff noise. Match existing style and don't refactor adjacent code.
