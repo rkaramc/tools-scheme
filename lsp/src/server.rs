@@ -57,6 +57,7 @@ enum SchemeCommand {
     #[serde(rename = "scheme.clearNamespace")]
     ClearNamespace((String,)),
     #[serde(rename = "scheme.restartREPL")]
+    #[allow(dead_code)]
     RestartREPL(Vec<serde_json::Value>),
 }
 
