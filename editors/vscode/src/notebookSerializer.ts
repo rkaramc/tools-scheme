@@ -32,7 +32,12 @@ export class SchemeNotebookSerializer implements vscode.NotebookSerializer {
                 const cleanCodePart = codePart.replace(/^\s*\n/, '').trimEnd();
                 
                 if (cleanCodePart.length > 0) {
-                    cells.push(new vscode.NotebookCellData(vscode.NotebookCellKind.Code, cleanCodePart, langId));
+                    const blocks = cleanCodePart.split(/(?:\r?\n[ \t]*){2,}/);
+                    for (const block of blocks) {
+                        if (block.trim().length > 0) {
+                            cells.push(new vscode.NotebookCellData(vscode.NotebookCellKind.Code, block.trimEnd(), langId));
+                        }
+                    }
                 }
 
                 const mdContentStart = match.index + match[0].length;
@@ -52,8 +57,15 @@ export class SchemeNotebookSerializer implements vscode.NotebookSerializer {
                 // Remaining code
                 const codePart = str.substring(currentIndex);
                 const cleanCodePart = codePart.replace(/^\s*\n/, '').trimEnd();
-                if (cleanCodePart.length > 0 || cells.length === 0) {
-                    cells.push(new vscode.NotebookCellData(vscode.NotebookCellKind.Code, cleanCodePart, langId));
+                if (cleanCodePart.length > 0) {
+                    const blocks = cleanCodePart.split(/(?:\r?\n[ \t]*){2,}/);
+                    for (const block of blocks) {
+                        if (block.trim().length > 0) {
+                            cells.push(new vscode.NotebookCellData(vscode.NotebookCellKind.Code, block.trimEnd(), langId));
+                        }
+                    }
+                } else if (cells.length === 0) {
+                    cells.push(new vscode.NotebookCellData(vscode.NotebookCellKind.Code, '', langId));
                 }
                 currentIndex = str.length;
             }

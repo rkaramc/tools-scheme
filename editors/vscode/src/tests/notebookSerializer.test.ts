@@ -33,6 +33,23 @@ describe('SchemeNotebookSerializer', () => {
         expect(data.cells[0].value).toBe('#lang racket\n(+ 1 2)');
     });
 
+    it('deserializes a file with multiple code cells separated by empty lines', async () => {
+        const text = '#lang racket\n\n(+ 1 2)\n\n\n(+ 3 4)\n';
+        const content = new TextEncoder().encode(text);
+        const data = await serializer.deserializeNotebook(content, token);
+
+        expect(data.cells.length).toBe(3);
+        
+        expect(data.cells[0].kind).toBe(vscode.NotebookCellKind.Code);
+        expect(data.cells[0].value).toBe('#lang racket');
+
+        expect(data.cells[1].kind).toBe(vscode.NotebookCellKind.Code);
+        expect(data.cells[1].value).toBe('(+ 1 2)');
+
+        expect(data.cells[2].kind).toBe(vscode.NotebookCellKind.Code);
+        expect(data.cells[2].value).toBe('(+ 3 4)');
+    });
+
     it('deserializes a file with code and a markdown block', async () => {
         const text = `#lang racket\n(+ 1 2)\n\n#| markdown\nThis is markdown\n|#\n\n(+ 3 4)\n`;
         const content = new TextEncoder().encode(text);
