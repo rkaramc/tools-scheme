@@ -124,7 +124,7 @@ suite("Extension Integration Test Suite", () => {
         const lenses = await vscode.commands.executeCommand<vscode.CodeLens[]>("vscode.executeCodeLensProvider", uri);
         if (lenses && lenses.length >= 3) {
           const titles = lenses.map(l => l.command?.title).filter(t => t !== undefined);
-          if (titles.some(t => t?.includes('Evaluate'))) {
+          if (titles.some(t => t?.includes('Run'))) {
             lensesFound = true;
             break;
           }
