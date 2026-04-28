@@ -1,3 +1,13 @@
+# Changelog
+
+## tools-scheme v0.1.3
+
+- chore: bump version to 0.1.3
+- test(vscode): update integration test to match new '? Run' CodeLens title
+- fix: stabilize LSP integration tests and correct version bump
+- fix(ts-dzb): fix pretty-print output double spacing and fragmentation
+- fix(ts-rrm): disable Run CodeLens in notebook editors
+
 ## tools-scheme v0.1.2
 
 - chore: bump version to 0.1.2
