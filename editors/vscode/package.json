@@ -2,7 +2,7 @@
     "name": "tools-scheme",
     "displayName": "Tools for Scheme/Racket",
     "description": "Language support for Scheme and Racket, including evaluation with inlay hints.",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "publisher": "rkaramc",
     "license": "MIT",
     "type": "commonjs",

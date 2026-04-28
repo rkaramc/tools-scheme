@@ -1,3 +1,9 @@
+## tools-scheme v0.1.2
+
+- chore: bump version to 0.1.2
+- fix(ts-79s): parse notebook source code files to treat empty lines as notebook cell breaks
+- fix(lsp): unicode `Play` for Run codelens and `left-arrow` for Inlay hints
+
 ## tools-scheme v0.1.1
 
 - chore: update version to 0.1.1
