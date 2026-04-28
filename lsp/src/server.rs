@@ -7,7 +7,7 @@ use lsp_types::{
     request::{
         CodeActionRequest, ExecuteCommand, InlayHintRequest, CodeLensRequest,
     },
-    SelectionRange, CodeLens, Command, InlayHint, CodeActionKind,
+    CodeLens, Command, InlayHint, CodeActionKind, Range,
 };
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -69,7 +69,7 @@ pub enum SchemeCommand {
     #[serde(rename = "scheme.evaluate")]
     Evaluate((String,)),
     #[serde(rename = "scheme.evaluateSelection")]
-    EvaluateSelection((String, String, SelectionRange)),
+    EvaluateSelection((String, String, Range)),
     #[serde(rename = "scheme.clearNamespace")]
     ClearNamespace((String,)),
     #[serde(rename = "scheme.restartREPL")]
@@ -136,8 +136,17 @@ impl Server {
     pub fn handle_notification(&mut self, not: Notification) -> Result<(), Box<dyn Error + Sync + Send>> {
         let _not = NotificationDispatcher::new(not)
             .on_sync_mut::<DidOpenTextDocument>(|params| {
+                let uri = params.text_document.uri.to_string();
+                let version = params.text_document.version;
                 self.write_state().document_store.open(params.text_document);
-                // Trigger background parse immediately on open
+                
+                // Trigger background parse immediately on open to populate ranges for CodeLens
+                if let Err(e) = self.eval_tx.send(EvalTask {
+                    uri,
+                    action: EvalAction::Parse { version },
+                }) {
+                    eprintln!("eval_tx channel full, dropping initial parse task: {}", e);
+                }
                 Ok(())
             })?
             .on_sync_mut::<DidChangeTextDocument>(|params| {
@@ -263,8 +272,8 @@ impl Server {
                 let (version, byte_range) = {
                     let lock = self.read_state();
                     if let Some(doc) = lock.document_store.get(&uri) {
-                        let start_byte = lock.document_store.position_to_byte(&uri, range.range.start);
-                        let end_byte = lock.document_store.position_to_byte(&uri, range.range.end);
+                        let start_byte = lock.document_store.position_to_byte(&uri, range.start);
+                        let end_byte = lock.document_store.position_to_byte(&uri, range.end);
                         (Some(doc.version), Some((start_byte, end_byte)))
                     } else {
                         (None, None)
@@ -277,7 +286,7 @@ impl Server {
                         content: text,
                         request_id: id.clone(),
                         version,
-                        offset: Some((range.range.start.line, range.range.start.character)),
+                        offset: Some((range.start.line, range.start.character)),
                         byte_range,
                     },
                 }) {

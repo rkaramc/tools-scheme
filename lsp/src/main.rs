@@ -83,6 +83,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     eprintln!("LSP Main: joining worker thread");
     worker_handle.join().map_err(|_| "Worker thread panicked")?;
 
+    // Explicitly drop connection to close the writer channel, allowing IO threads to exit.
+    drop(connection);
+
     eprintln!("LSP Main: joining IO threads");
     io_threads.join()?;
 

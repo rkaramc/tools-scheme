@@ -99,7 +99,7 @@ fn test_multiline_range_coordinates() {
             
             for hint in hints {
                 let label = hint["label"].as_str().unwrap();
-                if label.contains("=> 3") {
+                if label.contains("→ 3") {
                     found_hint = true;
                     let pos = &hint["position"];
                     // Ends at (+ 1\n   2) -> line 1, col 5
@@ -110,5 +110,5 @@ fn test_multiline_range_coordinates() {
             if found_hint { break; }
         }
     }
-    assert!(found_hint, "Did not find inlay hint with evaluation result '=> 3'");
+    assert!(found_hint, "Did not find inlay hint with evaluation result '→ 3'");
 }

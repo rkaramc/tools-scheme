@@ -58,7 +58,7 @@ fn test_crlf_drift_stress() {
         for hint in hints {
             if hint["position"]["line"] == 49 {
                 let label = hint["label"].as_str().unwrap();
-                if label.contains("=> 100") {
+                if label.contains(" → 100") {
                     last_line_correct = true;
                 }
             }
