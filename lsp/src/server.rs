@@ -340,6 +340,12 @@ impl Server {
         let uri_str = params.text_document.uri.to_string();
         let mut lenses = Vec::new();
 
+        if uri_str.starts_with("vscode-notebook-cell:/") {
+            let resp = Response::new_ok(id, lenses);
+            connection.sender.send(Message::Response(resp))?;
+            return Ok(());
+        }
+
         if let Some(doc) = self.read_state().document_store.get(&uri_str) {
             for range in &doc.ranges {
                 let selected_text = doc.line_index.get_text_range(&doc.text, *range);
