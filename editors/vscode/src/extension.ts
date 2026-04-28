@@ -29,8 +29,8 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.workspace.registerNotebookSerializer(
       "scheme-notebook",
-      new SchemeNotebookSerializer()
-    )
+      new SchemeNotebookSerializer(),
+    ),
   );
 
   notebookController = new SchemeNotebookController(() => client);
@@ -296,8 +296,8 @@ function startClient(context: vscode.ExtensionContext) {
     documentSelector: [
       { scheme: "file", language: "racket" },
       { scheme: "file", language: "scheme" },
-      { scheme: "vscode-notebook-cell", language: "racket" },
-      { scheme: "vscode-notebook-cell", language: "scheme" },
+      // { scheme: "vscode-notebook-cell", language: "racket" },
+      // { scheme: "vscode-notebook-cell", language: "scheme" },
       { scheme: "vscode-notebook-cell", language: "racket-notebook-cell" },
       { scheme: "vscode-notebook-cell", language: "scheme-notebook-cell" },
     ],
@@ -309,6 +309,13 @@ function startClient(context: vscode.ExtensionContext) {
     },
     outputChannel: outputChannel,
     middleware: {
+      provideCodeLenses: async (document, token, next) => {
+        const result = await next(document, token);
+        outputChannel.appendLine(
+          `[CodeLens] Received ${result?.length} codelens for ${document.uri.toString()}`,
+        );
+        return result;
+      },
       provideInlayHints: async (document, range, token, next) => {
         const result = await next(document, range, token);
         outputChannel.appendLine(
@@ -328,22 +335,27 @@ function startClient(context: vscode.ExtensionContext) {
 
   // Start the client
   outputChannel.appendLine("Starting LSP client...");
-  client.start().then(() => {
-    outputChannel.appendLine("LSP client started. Registering notebook listeners.");
-    client.onNotification("scheme/notebook/outputStream", (params) => {
-      if (notebookController) {
-        notebookController.handleOutputStream(params);
-      }
-    });
+  client
+    .start()
+    .then(() => {
+      outputChannel.appendLine(
+        "LSP client started. Registering notebook listeners.",
+      );
+      client.onNotification("scheme/notebook/outputStream", (params) => {
+        if (notebookController) {
+          notebookController.handleOutputStream(params);
+        }
+      });
 
-    client.onNotification("scheme/notebook/evalFinished", (params) => {
-      if (notebookController) {
-        notebookController.handleEvalFinished(params);
-      }
+      client.onNotification("scheme/notebook/evalFinished", (params) => {
+        if (notebookController) {
+          notebookController.handleEvalFinished(params);
+        }
+      });
+    })
+    .catch((err) => {
+      outputChannel.appendLine(`Failed to start LSP client: ${err}`);
     });
-  }).catch((err) => {
-    outputChannel.appendLine(`Failed to start LSP client: ${err}`);
-  });
 }
 
 async function restartClient(context: vscode.ExtensionContext) {
