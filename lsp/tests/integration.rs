@@ -852,13 +852,18 @@ fn test_graceful_shutdown() {
 
     // Wait for process to exit
     let mut exited = false;
+    let mut exit_status = None;
     for _ in 0..10 {
-        if lsp.child.try_wait().unwrap().is_some() {
+        if let Some(status) = lsp.child.try_wait().unwrap() {
             exited = true;
+            exit_status = Some(status);
             break;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
     assert!(exited, "LSP process did not exit after exit notification");
+    
+    let status = exit_status.unwrap();
+    assert!(status.success(), "LSP process did not exit cleanly (success/code 0). Got status: {}", status);
 }
 
