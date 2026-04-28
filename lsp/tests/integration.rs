@@ -166,7 +166,7 @@ fn test_evaluate_selection_offset() {
     lsp.write_message(&did_open);
 
     // Evaluate the third line, passing the offset {line: 2, character: 0}
-    let exec_cmd = r#"{"jsonrpc":"2.0","id":20,"method":"workspace/executeCommand","params":{"command":"scheme.evaluateSelection","arguments":["file:///sel.rkt","(+ 5 6)",{"line":2,"character":0}]}}"#;
+    let exec_cmd = r#"{"jsonrpc":"2.0","id":20,"method":"workspace/executeCommand","params":{"command":"scheme.evaluateSelection","arguments":["file:///sel.rkt","(+ 5 6)",{"start":{"line":2,"character":0},"end":{"line":2,"character":7}}]}}"#;
     lsp.write_message(exec_cmd);
 
     // Wait for evaluation
@@ -436,7 +436,7 @@ fn test_notebook_diagnostic_downgrade() {
     lsp.initialize();
 
     // 1. Evaluate a normal file with duplicate (should be ERROR)
-    let eval_normal = r#"{"jsonrpc":"2.0","id":50,"method":"workspace/executeCommand","params":{"command":"scheme.evaluateSelection","arguments":["file:///normal.rkt","(define-values (x x) (values 1 2))",{"line":0,"character":0}]}}"#;
+    let eval_normal = r#"{"jsonrpc":"2.0","id":50,"method":"workspace/executeCommand","params":{"command":"scheme.evaluateSelection","arguments":["file:///normal.rkt","(define-values (x x) (values 1 2))",{"start":{"line":0,"character":0},"end":{"line":0,"character":33}}]}}"#;
     lsp.write_message(eval_normal);
 
     let mut found_error = false;
@@ -456,7 +456,7 @@ fn test_notebook_diagnostic_downgrade() {
     assert!(found_error, "Standard file should have ERROR severity for duplicate identifier");
 
     // 2. Evaluate a notebook cell with duplicate (should be WARNING)
-    let eval_notebook = r#"{"jsonrpc":"2.0","id":51,"method":"workspace/executeCommand","params":{"command":"scheme.evaluateSelection","arguments":["vscode-notebook-cell:/test.rkt#cell1","(define-values (y y) (values 1 2))",{"line":0,"character":0}]}}"#;
+    let eval_notebook = r#"{"jsonrpc":"2.0","id":51,"method":"workspace/executeCommand","params":{"command":"scheme.evaluateSelection","arguments":["vscode-notebook-cell:/test.rkt#cell1","(define-values (y y) (values 1 2))",{"start":{"line":0,"character":0},"end":{"line":0,"character":33}}]}}"#;
     lsp.write_message(eval_notebook);
 
     let mut found_warning = false;

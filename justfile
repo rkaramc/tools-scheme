@@ -17,7 +17,7 @@ _build-1:
 _build-2:
     Write-Host ">>> Level 2: Release Build (LSP + Extension)"
     cd lsp; cargo build --release
-    cd editors/vscode; npm run compile
+    cd editors/vscode; vsce package
 
 _build-3:
     Write-Host ">>> Level 3: Multi-platform Release Build"
@@ -72,8 +72,8 @@ test target="all" *args:
     } elseif ("{{target}}" -eq "racket") { \
         raco test lsp/src/eval-shim.rkt \
     } elseif ("{{target}}" -eq "all") { \
-        Write-Host ">>> Testing LSP (Rust)"; cd lsp; cargo test; \
-        Write-Host ">>> Testing VSCode Extension (TypeScript)"; cd editors/vscode; npm test > test-vscode-output.txt 2>&1; \
+        Write-Host ">>> Testing LSP (Rust)"; cd lsp; cargo test; cd ..; \
+        Write-Host ">>> Testing VSCode Extension (TypeScript)"; cd editors/vscode; npm test > test-vscode-output.txt 2>&1; cd ../..; \
         Write-Host ">>> Testing Eval-Shim (Racket)"; raco test lsp/src/eval-shim.rkt \
     } else { \
         Write-Host "Error: Unknown test target '{{target}}'. Use 'lsp', 'vscode', 'racket', or 'all'."; \
