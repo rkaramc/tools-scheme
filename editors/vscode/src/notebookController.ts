@@ -111,13 +111,39 @@ export class SchemeNotebookController {
 
         if (!targetExecution) return;
 
+        if (payload.type === 'stdout' || payload.type === 'stderr') {
+            const isStdout = payload.type === 'stdout';
+            const mime = isStdout ? 'application/vnd.code.notebook.stdout' : 'application/vnd.code.notebook.stderr';
+
+            const cell = targetExecution.cell;
+            const outputs = cell.outputs;
+            const lastOutput = outputs.length > 0 ? outputs[outputs.length - 1] : undefined;
+
+            if (lastOutput) {
+                const existingItem = lastOutput.items.find(item => item.mime === mime);
+                if (existingItem) {
+                    const currentData = Buffer.from(existingItem.data).toString('utf8');
+                    const newData = currentData + payload.data;
+                    const newItem = isStdout 
+                        ? vscode.NotebookCellOutputItem.stdout(newData) 
+                        : vscode.NotebookCellOutputItem.stderr(newData);
+                    
+                    const newItems = lastOutput.items.map(item => item.mime === mime ? newItem : item);
+                    await targetExecution.replaceOutputItems(newItems, lastOutput);
+                    return;
+                }
+            }
+
+            const item = isStdout 
+                ? vscode.NotebookCellOutputItem.stdout(payload.data) 
+                : vscode.NotebookCellOutputItem.stderr(payload.data);
+            await targetExecution.appendOutput(new vscode.NotebookCellOutput([item]));
+            return;
+        }
+
         let outputItem: vscode.NotebookCellOutputItem | undefined;
 
-        if (payload.type === 'stdout') {
-            outputItem = vscode.NotebookCellOutputItem.stdout(payload.data + '\n');
-        } else if (payload.type === 'stderr') {
-            outputItem = vscode.NotebookCellOutputItem.stderr(payload.data + '\n');
-        } else if (payload.type === 'result') {
+        if (payload.type === 'result') {
             outputItem = vscode.NotebookCellOutputItem.text(payload.data);
         } else if (payload.type === 'rich') {
             try {
@@ -141,9 +167,6 @@ export class SchemeNotebookController {
         }
 
         if (outputItem) {
-            // Check if the last output was stdout, and append to it if so
-            // VS Code appendOutput handles creating a new output block, but sometimes we want to merge stdout.
-            // For simplicity, we just push a new output or let VS Code merge text internally.
             await targetExecution.appendOutput(new vscode.NotebookCellOutput([outputItem]));
         }
     }
