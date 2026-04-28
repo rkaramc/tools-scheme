@@ -1,5 +1,8 @@
 # Changelog
 
+- test(lsp): verify graceful shutdown exit code (Fixes ts-6ne.2.5)
+- feat(vscode): enable file nesting for LSP session files
+
 ## tools-scheme v0.1.3
 
 - chore: bump version to 0.1.3
