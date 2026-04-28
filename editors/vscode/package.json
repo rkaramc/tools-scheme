@@ -187,6 +187,15 @@
                     "description": "Custom file extensions to associate with Racket or Scheme. Example: { \".rktl\": \"racket\", \".sls\": \"scheme\" }"
                 }
             }
+        },
+        "configurationDefaults": {
+            "explorer.fileNesting.enabled": true,
+            "explorer.fileNesting.patterns": {
+                "*.rkt": "$(capture).rkt.session",
+                "*.rktnb": "$(capture).rktnb.session",
+                "*.scm": "$(capture).scm.session",
+                "*.ss": "$(capture).ss.session"
+            }
         }
     },
     "scripts": {
