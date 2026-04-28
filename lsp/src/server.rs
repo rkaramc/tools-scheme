@@ -319,7 +319,7 @@ impl Server {
                 if !res.is_error && res.result != "void" {
                     hints.push(InlayHint {
                         position: lsp_types::Position::new(res.end_line.saturating_sub(1), res.end_col),
-                        label: lsp_types::InlayHintLabel::String(format!(" ΓåÆ {}", res.result)),
+                        label: lsp_types::InlayHintLabel::String(format!(" → {}", res.result)),
                         kind: None,
                         text_edits: None,
                         tooltip: None,
@@ -344,7 +344,7 @@ impl Server {
             for range in &doc.ranges {
                 let selected_text = doc.line_index.get_text_range(&doc.text, *range);
                 let cmd = Command {
-                    title: "ΓûÂ Run".to_string(),
+                    title: "▶ Run".to_string(),
                     command: "scheme.evaluateSelection".to_string(),
                     arguments: Some(vec![serde_json::json!(uri_str), serde_json::json!(selected_text), serde_json::json!(*range)]),
                 };
