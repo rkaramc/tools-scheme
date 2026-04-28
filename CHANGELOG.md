@@ -1,3 +1,66 @@
+## tools-scheme v0.1.1
+
+- chore: update version to 0.1.1
+- deps(vscode): `npm audit fix --force` experiments
+- tests: add lsp integration test for graceful shutdown
+- tests: fix notebook isolation test by using camelCase; verify concurrency
+- tests: add lsp integration test for document lifecycle (didChange/didClose)
+- tests: add unit tests for DocumentStore
+- tests: add lsp integration tests for #lang fallback and evaluate-file with stdin
+- tests: implement lsp integration tests for codeAction and unknown commands; add racket tests to justfile
+- test(racket): implement verified rackunit tests for utilities and LRU cache; fix(racket): handle invalid URI decoding and parameterize config
+- fix(lsp): fix RestartREPL command deserialization and clear diagnostics on restart; test(vscode): complete unit and integration tests
+- test(vscode): comprehensive unit and integration test suite
+- test(vscode): update config
+- docs: improve context engineering with detailed tech stack and commands
+- docs: comprehensive architecture and user documentation for Scheme LSP
+- feat(vscode): isolate notebook cells and establish integration testing
+- fix(notebook): use .rktnb extension to avoid conflicts (ts-043.12)
+- fix(notebook): share evaluation state across cells (ts-043.11)
+- fix(lsp): normalize #lang detection and fix relative requires (ts-043.10)
+- test(lsp): add notebook state persistence integration test and close notebook epic
+- feat(vscode): implement Task 8 (Diagnostic Scoping) and wire up notebook cell support in LSP
+- feat(vscode): implement SchemeNotebookController to bridge VS Code execution with the LSP
+- feat(vscode): implement SchemeNotebookSerializer for pure code notebooks
+- feat(lsp): implement true sandbox cancellation with break-evaluator
+- Improve on_cancel_eval to notify client of environment reset
+- Implement Phase 1 of Racket Notebook: Sandbox Evaluator and Rich Media Serialization
+- spec: Racket Notebook Interface for VS Code
+- fix(lsp): Use common global.session instead of per-session file.
+- test(vscode): add unit tests for resolveLspPath logic
+- test(vscode): configure for unit tests
+- chore: setup eslint configuration for vscode extension
+- feat(vscode): add custom file extension support and refine temp cleanup
+- config: update to beads 1.0.2; add CodeLLDB launch configuration for LSP
+- fix(lsp): address remaining clippy warnings (ts-c41)
+- fix(lsp): remove unused compiler directives (ts-bca)
+- fix(lsp): improve inlay hint truncation for side-effects (ts-l59)
+- fix(lsp): make lock poison recovery generic (ts-nkx)
+- fix(vscode): improve stale binary cleanup heuristics (ts-35v)
+- fix(lsp): avoid buffering full output in REPL reader (ts-zy0)
+- fix(lsp): use bounded channels to prevent OOM (ts-8bi)
+- fix(lsp): enforce timeout on evaluator state transitions (ts-haf)
+- refactor: centralize state lock poison recovery and optimize document updates (ts-9rw)
+- refactor: relocate eval_worker to worker.rs and break down into handlers (ts-xag)
+- refactor: implement idiomatic command pattern for executeCommand (ts-1p4)
+- chore: fix unused imports
+- Refactor: Use lsp-server dispatchers for routing (ts-3ad)
+- Refactor: Abstract boilerplate LSP message dispatching (ts-8f9)
+- docs: implementation plan for ts-j9r support incremental sync in didChangeTextDocument - decided not to fix for now
+- Refactor: Streamline shift_results logic with Lazy Evaluation (ts-f49)
+- Chore: Refactor SharedState to move results and ranges into DocumentStore (ts-3is)
+- plan: sequence 8 open issues for refactoring.
+- Optimize: Reuse LineIndex in shift_results (ts-96z)
+- Optimize: Avoid full text cloning in shift_results (ts-bt7)
+- Refactor coordinate mapping and add technical documentation
+- Refactor: Deduplicate CRLF handling with custom RacketCharIndices iterator (ts-dnj)
+- chore(lsp): evaluate get-syntax-end in Racket shim (ts-o82)
+- fix(vscode): recreate CodeLens after reset+evaluate file (ts-gyz)
+- fix(vscode): update inlay hint positions for edited expressions (ts-89a)
+- feat(lsp): implement robust Racket-to-LSP coordinate mapping
+- fix(lsp): prevent CodeLens evaluation from overwriting all inlay hints (ts-9xu)
+- ux(vscode): introduce submenu and rename clearNamespace to 'Reset File'
+
 ## tools-scheme v0.1.0
 
 - docs: add user guide for ideal editing workflow

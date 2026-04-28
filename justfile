@@ -35,7 +35,7 @@ release:
 
 # Install the LSP and VS Code extension (Release builds only)
 install:
-    if (!(Test-Path "lsp/target/release/scheme-toolbox-lsp.exe") -and !(Test-Path "lsp/target/release/scheme-toolbox-lsp")) { \
+    if (!(Test-Path "target/release/scheme-toolbox-lsp.exe") -and !(Test-Path "target/release/scheme-toolbox-lsp")) { \
         Write-Host "Error: Release build not found. Please run 'just build 2' first."; \
         exit 1; \
     }
