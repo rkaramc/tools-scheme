@@ -33,24 +33,24 @@
   - Files: `lsp/src/worker.rs`, `lsp/src/evaluator.rs`
 
 ## Phase 3: VS Code Frontend
-- [ ] **Task 6: Notebook Serializer**
+- [x] **Task 6: Notebook Serializer**
   - Description: Implement `NotebookSerializer` to map `.rkt` files to VS Code cells.
   - Acceptance: Opening a `.rkt` file displays code and markdown cells correctly.
   - Verify: Manual check of file opening/saving.
   - Files: `editors/vscode/src/notebook/serializer.ts`
 
-- [ ] **Task 7: Notebook Controller**
+- [x] **Task 7: Notebook Controller**
   - Description: Implement `NotebookController` to manage execution lifecycle.
   - Acceptance: Clicking "Run" sends code to LSP; output appears in the notebook.
   - Verify: Manual verification with standard and rich output.
   - Files: `editors/vscode/src/notebook/controller.ts`, `editors/vscode/src/extension.ts`
 
-- [ ] **Task 8: Diagnostic Scoping**
+- [x] **Task 8: Diagnostic Scoping**
   - Description: Scoped diagnostic degradation for notebook-opened files.
   - Acceptance: "Duplicate identifier" errors become Warnings in notebooks but stay Errors in standard files.
   - Verify: Check "Problems" tab in both views.
   - Files: `lsp/src/server.rs`
 
-- [ ] **Task 9: True Sandbox Cancellation**
+- [x] **Task 9: True Sandbox Cancellation**
   - Description: Update eval-shim.rkt to use break-evaluator and process stdin asynchronously so that scheme/notebook/cancelEval can interrupt an infinite loop without killing the process. Modify Rust Evaluator to allow concurrent reading/writing of process pipes.
   - Acceptance: Cancelling a running cell stops it with a user-friendly error but preserves the notebook's Racket environment state.
