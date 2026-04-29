@@ -70,8 +70,12 @@ impl Evaluator {
         };
         std::fs::create_dir_all(&temp_dir)?;
 
-        // Use project-specific session name instead of random suffix
-        let session_name = "global.session".to_string();
+        // Use project-specific session name instead of random suffix, unless testing
+        let session_name = if std::env::var("TOOLS_SCHEME_TEST").is_ok() {
+            format!("test_{}.session", fastrand::u32(..))
+        } else {
+            "global.session".to_string()
+        };
         let global_session_path = temp_dir.join(session_name);
 
         let mut global_session = std::fs::OpenOptions::new()

@@ -75,9 +75,6 @@ pub fn eval_worker(
             EvalAction::Evaluate { content, version, offset, byte_range, request_id } => {
                 on_evaluate(&mut evaluator, &state, &sender, &task.uri, content, version, offset, byte_range, request_id);
             }
-            EvalAction::Parse { version } => {
-                on_parse(&mut evaluator, &state, &sender, &task.uri, version);
-            }
             EvalAction::Clear => {
                 on_clear(&mut evaluator, &state, &sender, &task.uri);
             }
@@ -87,9 +84,38 @@ pub fn eval_worker(
             EvalAction::EvalCell { code, execution_id, notebook_uri, version } => {
                 on_eval_cell(&mut evaluator, &state, &sender, &cancel_rx, &task.uri, notebook_uri, code, execution_id, version);
             }
+            EvalAction::Parse { .. } => {
+                evaluator.log("WARNING: EvalWorker received Parse action. This should be routed to AnalysisActor.");
+            }
         }
     }
     evaluator.log("Eval worker channel closed, shutting down evaluator");
+    evaluator.shutdown();
+}
+
+pub fn analysis_worker(
+    mut evaluator: Evaluator,
+    rx: crossbeam_channel::Receiver<EvalTask>,
+    state: Arc<RwLock<SharedState>>,
+    sender: crossbeam_channel::Sender<Message>,
+) {
+    for task in rx {
+        match task.action {
+            EvalAction::Parse { version } => {
+                on_parse(&mut evaluator, &state, &sender, &task.uri, version);
+            }
+            EvalAction::Restart => {
+                // We only need to restart the evaluator process. We shouldn't clear the state here
+                // because eval_worker handles state clearing to avoid race conditions.
+                evaluator.log("AnalysisWorker: Restart triggered");
+                let _ = evaluator.restart();
+            }
+            _ => {
+                evaluator.log(&format!("WARNING: AnalysisWorker received non-analysis action for uri: {}", task.uri));
+            }
+        }
+    }
+    evaluator.log("Analysis worker channel closed, shutting down evaluator");
     evaluator.shutdown();
 }
 

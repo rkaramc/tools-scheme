@@ -26,6 +26,7 @@ impl LspProcess {
 
         let mut child = Command::new(&lsp_path)
             .arg(&shim_path)
+            .env("TOOLS_SCHEME_TEST", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
