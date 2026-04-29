@@ -294,6 +294,54 @@ impl Evaluator {
         Ok(self.state.as_mut().unwrap())
     }
 
+    fn send_command<F>(&mut self, req: &serde_json::Value, mut on_line: F) -> Result<()>
+    where
+        F: FnMut(&str),
+    {
+        let state = self.ensure_alive()?;
+
+        let mut line = serde_json::to_string(req)?;
+        line.push('\n');
+
+        let mut retry = false;
+        if state.stdin_tx.send(line.clone()).is_err() {
+            retry = true;
+        }
+
+        if retry {
+            self.state.take();
+            let new_state = self.ensure_alive()?;
+            new_state.stdin_tx.send(line)?;
+        }
+
+        loop {
+            let state = self.state.as_mut().unwrap();
+            let buffer = match state.stdout_rx.recv_timeout(self.timeout) {
+                Ok(l) => l,
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    if let Some(mut state) = self.state.take() {
+                        let _ = state.child.kill();
+                        let _ = state.child.wait();
+                    }
+                    return Err(anyhow!("Command timed out after {:?}", self.timeout));
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    self.state.take();
+                    return Err(anyhow!("REPL process exited unexpectedly"));
+                }
+            };
+
+            let trimmed = buffer.trim();
+            if trimmed == "READY" {
+                break;
+            }
+
+            on_line(&buffer);
+        }
+
+        Ok(())
+    }
+
     #[allow(unused)]
     pub fn evaluate(&mut self, target_path: &PathBuf) -> Result<Vec<EvalResult>> {
         let content = std::fs::read_to_string(target_path)?;
@@ -303,6 +351,20 @@ impl Evaluator {
     }
 
     pub fn evaluate_str(&mut self, content: &str, uri: Option<&str>, context_label: Option<&str>, log: Option<&File>) -> Result<Vec<EvalResult>> {
+        let has_log = log.is_some();
+        
+        // Unfortunately we can't easily borrow the global_session mutably inside the closure
+        // if we use send_command. Actually, we can if we take it out or use interior mutability, 
+        // but let's just log directly if it's the global session.
+        if !has_log {
+            let label = context_label.or(uri).unwrap_or("UNKNOWN");
+            writeln!(&mut self.global_session, "\n--- EVAL INPUT NO LOG ({}) ---\n{}\n--- EVAL OUTPUT ---", label, content)?;
+            self.global_session.flush()?;
+        }
+        
+        // Because of the log file borrowing issues, we'll keep evaluate_str's loop as is for now,
+        // or we could use the new send_command if we handle logging differently.
+        // Let's keep it for clear_namespace and validate_blocks first.
         if let Some(mut file) = log {
             if let Some(label) = context_label {
                 writeln!(file, "\n--- EVAL INPUT ({}) ---\n{}\n--- EVAL OUTPUT ---", label, content)?;
@@ -390,98 +452,28 @@ impl Evaluator {
             "type": "clear-namespace",
             "uri": uri
         });
-        let mut line = serde_json::to_string(&req)?;
-        line.push('\n');
-        self.log(&format!("DEBUG: Sending clear-namespace to racket: {}", line));
-
-        {
-            let state = self.ensure_alive()?;
-            let _ = state.stdin_tx.send(line);
-        }
-
-        // Wait for READY to ensure the command was processed
-        loop {
-            let buffer = match self.state.as_mut().unwrap().stdout_rx.recv_timeout(self.timeout) {
-                Ok(l) => l,
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    if let Some(mut state) = self.state.take() {
-                        let _ = state.child.kill();
-                        let _ = state.child.wait();
-                    }
-                    return Err(anyhow!("clear-namespace timed out after {:?}", self.timeout));
-                }
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                    self.state.take();
-                    return Err(anyhow!("REPL process exited unexpectedly"));
-                }
-            };
-
-            self.log(&format!("DEBUG: clear_namespace received: {:?}", buffer));
-            if buffer.trim() == "READY" {
-                break;
-            }
-        }
-        Ok(())
-    }
-    #[allow(unused)]
-    pub fn parse(&mut self, target_path: &PathBuf) -> Result<Vec<RangeResult>> {
-        let content = std::fs::read_to_string(target_path)?;
-        let uri = format!("file:///{}", target_path.to_string_lossy());
-        self.parse_str(&content, Some(&uri))
+        self.send_command(&req, |_| {})
     }
 
-    #[allow(unused)]
-    pub fn parse_str(&mut self, content: &str, uri: Option<&str>) -> Result<Vec<RangeResult>> {
-        let state = self.ensure_alive()?;
-
+    pub fn validate_blocks(&mut self, blocks: Vec<String>) -> Result<Vec<bool>> {
         let req = serde_json::json!({
-            "type": "parse",
-            "content": content,
-            "uri": uri
+            "type": "validate-blocks",
+            "blocks": blocks
         });
 
-        let mut line = serde_json::to_string(&req)?;
-        line.push('\n');
-        
-        let mut retry = false;
-        if state.stdin_tx.send(line.clone()).is_err() {
-            retry = true;
-        }
+        let mut results = vec![false; blocks.len()];
 
-        if retry {
-            self.state.take();
-            let new_state = self.ensure_alive()?;
-            let _ = new_state.stdin_tx.send(line);
-        }
-
-        let mut results = Vec::new();
-        
-        loop {
-            let state = self.state.as_mut().unwrap();
-            let buffer = match state.stdout_rx.recv_timeout(self.timeout) {
-                Ok(l) => l,
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    if let Some(mut state) = self.state.take() {
-                        let _ = state.child.kill();
-                        let _ = state.child.wait();
+        self.send_command(&req, |trimmed| {
+            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if json_val.get("type").and_then(|v| v.as_str()) == Some("validation") {
+                    let index = json_val.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                    let valid = json_val.get("valid").and_then(|v| v.as_bool()).unwrap_or(false);
+                    if index < results.len() {
+                        results[index] = valid;
                     }
-                    return Err(anyhow!("Parsing timed out after {:?}", self.timeout));
                 }
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                    self.state.take();
-                    return Err(anyhow!("REPL process exited unexpectedly"));
-                }
-            };
-
-            let trimmed = buffer.trim();
-            if trimmed == "READY" {
-                break;
             }
-            
-            if let Ok(res) = serde_json::from_str::<RangeResult>(trimmed) {
-                results.push(res);
-            }
-        }
+        })?;
 
         Ok(results)
     }
@@ -577,36 +569,6 @@ mod tests {
         let result = evaluator.evaluate_str("42", None, None, None).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].result, "42");
-    }
-
-    #[test]
-    fn test_delegated_parsing() {
-        let mut evaluator = Evaluator::new(None).unwrap();
-        evaluator.timeout = Duration::from_secs(5);
-
-        let text = r#"
-(define x 1)
-#;
-(define y 2)
-#|
-  Block comment
-|#
-(define z 3)
-"#;
-        let ranges = evaluator.parse_str(text, None).unwrap();
-        
-        // Should find (define x 1) and (define z 3), but skip (define y 2) and block comment
-        assert_eq!(ranges.len(), 2);
-        
-        assert_eq!(ranges[0].line, 2);
-        assert_eq!(ranges[0].col, 0);
-        assert_eq!(ranges[0].end_line, 2);
-        assert_eq!(ranges[0].end_col, 12);
-        
-        assert_eq!(ranges[1].line, 8);
-        assert_eq!(ranges[1].col, 0);
-        assert_eq!(ranges[1].end_line, 8);
-        assert_eq!(ranges[1].end_col, 12);
     }
 
     #[test]

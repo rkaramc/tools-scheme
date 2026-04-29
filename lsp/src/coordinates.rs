@@ -127,6 +127,14 @@ impl LineIndex {
         Position::new(line as u32, character)
     }
 
+    /// Convert a byte offset range into an LSP `Range`.
+    pub fn offset_to_range(&self, text: &str, start_offset: usize, end_offset: usize) -> lsp_types::Range {
+        lsp_types::Range::new(
+            self.offset_to_position(text, start_offset),
+            self.offset_to_position(text, end_offset),
+        )
+    }
+
     /// Convert a Racket code-point position (1-indexed line, 0-indexed column) and span
     /// into an LSP `Range` (0-indexed line/column, UTF-16).
     pub fn range_from_span(&self, text: &str, line: u32, col: u32, span: u32) -> lsp_types::Range {

@@ -228,22 +228,60 @@ fn on_parse(
             return;
         }
 
-        let parse_results = evaluator.parse_str(&c, Some(uri_str));
-        if let Ok(results) = parse_results {
-            evaluator.log(&format!("Parsed {} forms", results.len()));
-            let mut lock = state.write_recovered();
-
-            if let Some(doc) = lock.document_store.get_mut(uri_str) {
-                 let lsp_ranges: Vec<Range> = results.iter().map(|r| {
-                    doc.line_index.range_from_span(&doc.text, r.line, r.col, r.span)
-                }).collect();
-                doc.ranges = lsp_ranges;
+        // Split by empty lines: (?m)(?:\r?\n[ \t]*){2,}
+        // We need to keep track of the ranges.
+        let re = regex::Regex::new(r"(?m)(?:\r?\n[ \t]*){2,}").unwrap();
+        
+        let mut blocks = Vec::new();
+        let mut last_end = 0;
+        for m in re.find_iter(&c) {
+            if m.start() > last_end {
+                blocks.push(&c[last_end..m.start()]);
             }
+            last_end = m.end();
+        }
+        if last_end < c.len() {
+            blocks.push(&c[last_end..]);
+        }
+
+        evaluator.log(&format!("Split into {} physical blocks", blocks.len()));
+
+        let block_strings: Vec<String> = blocks.iter().map(|s| s.to_string()).collect();
+        let validation_results = evaluator.validate_blocks(block_strings).unwrap_or_default();
+
+        let mut lock = state.write_recovered();
+        if let Some(doc) = lock.document_store.get_mut(uri_str) {
+            let mut final_ranges = Vec::new();
+            let mut last_end = 0;
+            let mut i = 0;
+
+            let mut process_block = |start: usize, end: usize, idx: usize| {
+                let block_text = &c[start..end];
+                let is_markdown = block_text.contains("#| markdown") && block_text.contains("|#");
+                let is_valid = validation_results.get(idx).cloned().unwrap_or(false);
+
+                if is_valid && !is_markdown {
+                    let range = doc.line_index.offset_to_range(&c, start, end);
+                    final_ranges.push(range);
+                }
+            };
+
+            for m in re.find_iter(&c) {
+                if m.start() > last_end {
+                    process_block(last_end, m.start(), i);
+                    i += 1;
+                }
+                last_end = m.end();
+            }
+            if last_end < c.len() {
+                process_block(last_end, c.len(), i);
+            }
+
+            doc.ranges = final_ranges;
+            evaluator.log(&format!("Assigned {} valid ranges", doc.ranges.len()));
 
             // Ask the client to refresh code lenses
             sender.refresh_code_lenses();
-        } else if let Err(e) = parse_results {
-            evaluator.log(&format!("Parse error: {}", e));
         }
     }
 }

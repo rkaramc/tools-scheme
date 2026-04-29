@@ -412,6 +412,18 @@
 (define current-eval-thread #f)
 (define current-evaluator #f)
 
+(define (validate-blocks blocks)
+  (for ([block (in-list blocks)]
+        [i (in-naturals)])
+    (define port (open-input-string block))
+    (define has-valid-form
+      (with-handlers ([exn:fail? (lambda (e) #f)])
+        (define stx (read-syntax 'validator port))
+        (not (eof-object? stx))))
+    (define msg (hash 'type "validation" 'index i 'valid has-valid-form))
+    (displayln (jsexpr->string msg) (current-repl-output-port))
+    (flush-output (current-repl-output-port))))
+
 (define (run-repl)
   (parameterize ([read-accept-reader #t]
                  [read-accept-lang #t])
@@ -448,6 +460,10 @@
                  (break-evaluator current-evaluator))]
               [(string=? type "parse")
                (parse-string-content (hash-ref json-input 'content) uri)
+               (displayln "READY" (current-repl-output-port))
+               (flush-output (current-repl-output-port))]
+              [(string=? type "validate-blocks")
+               (validate-blocks (hash-ref json-input 'blocks))
                (displayln "READY" (current-repl-output-port))
                (flush-output (current-repl-output-port))]
               [(string=? type "clear-namespace")
