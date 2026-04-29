@@ -139,10 +139,18 @@ fn on_evaluate(
         .and_then(|u| u.to_file_path().ok())
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
 
-    let log_handle = state.read_recovered()
-        .document_store.get(uri_str)
-        .and_then(|d| d.session_file.as_ref())
-        .and_then(|f| f.try_clone().ok());
+    let log_handle = {
+        let lock = state.read_recovered();
+        if let Some(doc) = lock.document_store.get(uri_str) {
+            if doc.version > version.unwrap_or(0) {
+                evaluator.log(&format!("Pre-flight check failed: doc version {} > task version {:?}", doc.version, version));
+                return;
+            }
+            doc.session_file.as_ref().and_then(|f| f.try_clone().ok())
+        } else {
+            None
+        }
+    };
 
     evaluator.log(&format!("EvalAction::Evaluate(content, version: {:?}, offset: {:?}, byte_range: {:?}, request_id: {:?})", version, offset, byte_range, request_id));
 
@@ -206,12 +214,22 @@ fn on_evaluate(
                 .collect();
 
             // Store results with spatial merging.
-            {
+            let is_stale = {
                 let mut lock = state.write_recovered();
                 if let Some(doc) = lock.document_store.get_mut(uri_str) {
-                    merge_results(&mut doc.results, results, byte_range);
+                    if doc.version > version.unwrap_or(0) {
+                        evaluator.log(&format!("Post-flight check failed: doc version {} > task version {:?}", doc.version, version));
+                        true
+                    } else {
+                        merge_results(&mut doc.results, results, byte_range);
+                        false
+                    }
+                } else {
+                    false
                 }
-            }
+            };
+
+            if is_stale { return; }
 
             // Publish diagnostics.
             sender.send_diagnostics(uri, diagnostics, version);
@@ -263,25 +281,37 @@ fn on_parse(
             }
         };
 
-        let mut lock = state.write_recovered();
-        if let Some(doc) = lock.document_store.get_mut(uri_str) {
-            let mut final_ranges = Vec::new();
-            for r in ranges {
-                // Only show CodeLens for code blocks that are syntactically valid
-                if r.kind == "code" && r.valid {
-                    let start_offset = (r.pos.saturating_sub(1)) as usize;
-                    let end_offset = start_offset + (r.span as usize);
-                    let range = doc.line_index.offset_to_range(&c, start_offset, end_offset);
-                    final_ranges.push(range);
+        let is_stale = {
+            let mut lock = state.write_recovered();
+            if let Some(doc) = lock.document_store.get_mut(uri_str) {
+                if doc.version > version {
+                    evaluator.log(&format!("Post-flight check failed in Parse: doc version {} > task version {:?}", doc.version, version));
+                    true
+                } else {
+                    let mut final_ranges = Vec::new();
+                    for r in ranges {
+                        // Only show CodeLens for code blocks that are syntactically valid
+                        if r.kind == "code" && r.valid {
+                            let start_offset = (r.pos.saturating_sub(1)) as usize;
+                            let end_offset = start_offset + (r.span as usize);
+                            let range = doc.line_index.offset_to_range(&c, start_offset, end_offset);
+                            final_ranges.push(range);
+                        }
+                    }
+
+                    doc.ranges = final_ranges;
+                    evaluator.log(&format!("Assigned {} valid ranges", doc.ranges.len()));
+                    false
                 }
+            } else {
+                false
             }
+        };
 
-            doc.ranges = final_ranges;
-            evaluator.log(&format!("Assigned {} valid ranges", doc.ranges.len()));
+        if is_stale { return; }
 
-            // Ask the client to refresh code lenses
-            sender.refresh_code_lenses();
-        }
+        // Ask the client to refresh code lenses
+        sender.refresh_code_lenses();
     }
 }
 
@@ -439,7 +469,7 @@ mod tests {
 
 fn on_eval_cell(
     evaluator: &mut Evaluator,
-    _state: &Arc<RwLock<SharedState>>,
+    state: &Arc<RwLock<SharedState>>,
     sender: &crossbeam_channel::Sender<Message>,
     cancel_rx: &crossbeam_channel::Receiver<u32>,
     uri_str: &str,
@@ -531,8 +561,22 @@ fn on_eval_cell(
         }
     });
 
-    // Send collected diagnostics for the cell
-    sender.send_diagnostics(uri, diagnostics, version);
+    // Check post-flight version before sending diagnostics
+    let is_stale = {
+        let lock = state.read_recovered();
+        if let Some(doc) = lock.document_store.get(uri_str) {
+            doc.version > version.unwrap_or(0)
+        } else {
+            false
+        }
+    };
+
+    if is_stale {
+        evaluator.log(&format!("Post-flight check failed in EvalCell: document version > task version {:?}", version));
+    } else {
+        // Send collected diagnostics for the cell
+        sender.send_diagnostics(uri, diagnostics, version);
+    }
 
     let eval_finished_params = match result {
         Ok(_) => serde_json::json!({

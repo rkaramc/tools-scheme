@@ -875,6 +875,50 @@ fn test_codelens_grouping_by_empty_lines() {
 }
 
 #[test]
+fn test_coordinate_drift_prevention() {
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize();
+
+    // 1. Open document (version 1) with an infinite loop to guarantee Racket stays busy
+    let text_v1 = "(let loop () (loop))";
+    let did_open = format!(r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"file:///drift.rkt","languageId":"racket","version":1,"text":"{}"}}}}}}"#, text_v1.replace("\n", "\\n"));
+    lsp.write_message(&did_open);
+
+    // 2. Trigger evaluation for version 1
+    let eval_req = r#"{"jsonrpc":"2.0","id":70,"method":"workspace/executeCommand","params":{"command":"scheme.evaluate","arguments":["file:///drift.rkt"]}}"#;
+    lsp.write_message(eval_req);
+
+    // Ensure the eval has time to start blocking
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // 3. Send didChange to bump version to 2
+    let text_v2 = "(define x 42)";
+    let did_change = format!(r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":"file:///drift.rkt","version":2}},"contentChanges":[^{{"text":"{}"}}^]}}}}"#, text_v2.replace("\n", "\\n")).replace("^", "[").replace("^", "]");
+    lsp.write_message(&did_change);
+
+    // 4. Send restartREPL to kill the infinite loop
+    let restart_req = r#"{"jsonrpc":"2.0","id":71,"method":"workspace/executeCommand","params":{"command":"scheme.restartREPL","arguments":[]}}"#;
+    lsp.write_message(restart_req);
+
+    // 5. Verify that no diagnostics are published for version 1
+    let mut found_v1_diag = false;
+
+    // We expect the restart to happen and potentially other messages, but NEVER a v1 diagnostic
+    for _ in 0..15 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(2)) {
+            Some(b) => b,
+            None => break,
+        };
+        
+        if body.contains("textDocument/publishDiagnostics") && body.contains("\"version\":1") {
+            found_v1_diag = true;
+        }
+    }
+
+    assert!(!found_v1_diag, "Should not publish diagnostics for outdated version 1");
+}
+
+#[test]
 fn test_graceful_shutdown() {
     let mut lsp = LspProcess::spawn();
     lsp.initialize();
