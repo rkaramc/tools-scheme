@@ -210,7 +210,7 @@ fn test_lang_file_code_lenses() {
     let mut lsp = LspProcess::spawn();
     lsp.initialize();
 
-    let text = "#lang racket\n(+ 1 2)\n(+ 3 4)";
+    let text = "#lang racket\n(+ 1 2)\n\n(+ 3 4)";
     let did_open = format!(r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"file:///lang-lens.rkt","languageId":"racket","version":1,"text":"{}"}}}}}}"#, text.replace("\n", "\\n"));
     lsp.write_message(&did_open);
 
@@ -820,6 +820,58 @@ fn test_notebook_uri_isolation() {
         }
     }
     assert!(found_result, "Notebook A should be able to access its own variables");
+}
+
+#[test]
+fn test_codelens_grouping_by_empty_lines() {
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize();
+
+    // 1. forms separated by single newline (group together)
+    // 2. forms separated by double newline (separate groups)
+    // 3. markdown block
+    let text = "(define x 1)\n(define y 2)\n\n(define z 3)\n\n#| markdown\nhello\n|#\n\n(define w 4)";
+    let did_open = format!(r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"file:///grouping.rkt","languageId":"racket","version":1,"text":"{}"}}}}}}"#, text.replace("\n", "\\n"));
+    lsp.write_message(&did_open);
+
+    // Wait for the background parse task to finish
+    let mut found_refresh = false;
+    for _ in 0..15 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(10)) {
+            Some(b) => b,
+            None => break,
+        };
+        if body.contains("workspace/codeLens/refresh") {
+            found_refresh = true;
+            break;
+        }
+    }
+    assert!(found_refresh, "Did not receive code lens refresh after open");
+
+    // Request code lenses
+    let lens_req = r#"{"jsonrpc":"2.0","id":60,"method":"textDocument/codeLens","params":{"textDocument":{"uri":"file:///grouping.rkt"}}}"#;
+    lsp.write_message(lens_req);
+
+    let mut found_lenses = false;
+    for _ in 0..15 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(10)) {
+            Some(b) => b,
+            None => break,
+        };
+        if body.contains("\"id\":60") {
+            // Expected:
+            // Group 1: (define x 1)\n(define y 2) -> 1 lens
+            // Group 2: (define z 3) -> 1 lens
+            // Group 3: markdown -> 0 executable lenses (but maybe 1 markdown range)
+            // Group 4: (define w 4) -> 1 lens
+            // Total: 3 executable lenses
+            let lenses_count = body.matches("scheme.evaluateSelection").count();
+            assert_eq!(lenses_count, 3, "Expected 3 code lenses, got: {}", body);
+            found_lenses = true;
+            break;
+        }
+    }
+    assert!(found_lenses, "Did not receive code lens response");
 }
 
 #[test]
