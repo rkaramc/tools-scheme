@@ -253,36 +253,96 @@
       (namespace-attach-module (current-namespace) 'racket/class ns)
       (namespace-attach-module (current-namespace) 'racket/snip ns)
       (evaluate-port port file-path ns)))
-
   (when (string=? path "-") (delete-file target-path)))
 
+(define (block-evaluable? text)
+  (with-handlers ([exn:fail? (lambda (e) #f)])
+    (define port (open-input-string text))
+    (not (eof-object? (read-syntax 'validator port)))))
+
+(define (count-line-col text start-line start-col)
+  (let loop ([i 0] [l start-line] [c start-col])
+    (if (= i (string-length text))
+        (values l c)
+        (let ([ch (string-ref text i)])
+          (cond
+            [(char=? ch #\newline) (loop (+ i 1) (+ l 1) 0)]
+            [(char=? ch #\return)
+             (if (and (< (+ i 1) (string-length text))
+                      (char=? (string-ref text (+ i 1)) #\newline))
+                 (loop (+ i 2) (+ l 1) 0)
+                 (loop (+ i 1) (+ l 1) 0))]
+            [else (loop (+ i 1) l (+ c 1))])))))
+
+(define (emit-block-range start-line start-col end-line end-col span pos kind valid?)
+  (define range (hash 'type "range"
+                      'line start-line
+                      'col start-col
+                      'end_line end-line
+                      'end_col end-col
+                      'span span
+                      'pos pos
+                      'kind kind
+                      'valid valid?))
+  (displayln (jsexpr->string range) (current-repl-output-port)))
+
 (define (parse-string-content content uri)
-  (define source (or uri 'parser))
-  (define cached (cache-content! content source))
-  (define port (open-input-string cached))
-  (port-count-lines! port)
+  (define split-re #px"(?m:(\r?\n[ \t]*){2,})")
+  (define md-start-re #px"#\\|\\s*markdown\\s*")
   
-  (define (emit-ranges stx)
-    (define l (and (syntax? stx) (syntax->list stx)))
-    (if (and l (>= (length l) 4) (eq? (syntax-e (car l)) 'module))
-        (let* ([body-stx (cadddr l)]
-               [body-list (syntax->list body-stx)])
-          (if (and body-list (>= (length body-list) 1) (eq? (syntax-e (car body-list)) '#%module-begin))
-              (for ([form (cdr body-list)])
-                (emit-ranges form))
-              (emit-range stx)))
-        (emit-range stx)))
+  (define (process-code-blocks text start-pos start-line start-col)
+    (let loop ([start 0] [current-pos start-pos] [current-line start-line] [current-col start-col])
+      (define m (regexp-match-positions split-re text start))
+      (define block-end (if m (caar m) (string-length text)))
+      (define block-text (substring text start block-end))
+      (define span (bytes-length (string->bytes/utf-8 block-text)))
+      
+      (define-values (after-block-line after-block-col)
+        (count-line-col block-text current-line current-col))
+      
+      (when (> span 0)
+        (define is-valid (block-evaluable? block-text))
+        (emit-block-range current-line current-col after-block-line after-block-col span current-pos "code" is-valid))
+      
+      (when m
+        (let* ([sep-start (caar m)]
+               [sep-end (cdar m)]
+               [sep-text (substring text sep-start sep-end)]
+               [sep-span (bytes-length (string->bytes/utf-8 sep-text))])
+          (let-values ([(next-line next-col) (count-line-col sep-text after-block-line after-block-col)])
+            (loop sep-end (+ current-pos span sep-span) next-line next-col))))))
 
-  (define (emit-range stx)
-    (define-values (end-line end-col) (get-syntax-end stx))
-    (define start-line (or (syntax-line stx) 1))
-    (define start-col (or (syntax-column stx) 0))
-    (define span (or (syntax-span stx) 0))
-    (define pos (or (syntax-position stx) 1))
-    (define range (hash-set (make-range start-line start-col end-line end-col span pos) 'type "range"))
-    (displayln (jsexpr->string range) (current-repl-output-port)))
+  (let loop ([start 0] [current-pos 1] [current-line 1] [current-col 0])
+    (define m (regexp-match-positions md-start-re content start))
+    (cond
+      [m
+       (let* ([pre-md-end (caar m)]
+              [pre-md-text (substring content start pre-md-end)])
+         ;; Process code before the markdown block
+         (process-code-blocks pre-md-text current-pos current-line current-col)
+         
+         (let*-values ([(md-start-line md-start-col) (count-line-col pre-md-text current-line current-col)]
+                       [(md-start-pos) (+ current-pos (bytes-length (string->bytes/utf-8 pre-md-text)))]
+                       [(md-content-start) (cdar m)]
+                       [(md-end-match) (regexp-match-positions #px"\\|#" content md-content-start)])
+           (cond
+             [md-end-match
+              (let* ([md-end-pos (caar md-end-match)]
+                     [full-md-text (substring content (caar m) (+ md-end-pos 2))]
+                     [full-md-span (bytes-length (string->bytes/utf-8 full-md-text))])
+                (let-values ([(md-end-line md-end-col) (count-line-col full-md-text md-start-line md-start-col)])
+                  (emit-block-range md-start-line md-start-col md-end-line md-end-col full-md-span md-start-pos "markdown" #t)
+                  (loop (+ md-end-pos 2) (+ md-start-pos full-md-span) md-end-line md-end-col)))]
+             [else
+              ;; Unclosed markdown block - treat rest of file as markdown
+              (let* ([full-md-text (substring content (caar m))]
+                     [full-md-span (bytes-length (string->bytes/utf-8 full-md-text))])
+                (let-values ([(md-end-line md-end-col) (count-line-col full-md-text md-start-line md-start-col)])
+                  (emit-block-range md-start-line md-start-col md-end-line md-end-col full-md-span md-start-pos "markdown" #t)))])))]
+      [else
+       ;; Process remaining code
+       (process-code-blocks (substring content start) current-pos current-line current-col)])))
 
-  (for-each-syntax port source emit-ranges))
 
 (define (uri-decode str)
   ;; Minimal percent-decoder for path characters (handles %3A → ":" etc.).
@@ -415,12 +475,7 @@
 (define (validate-blocks blocks)
   (for ([block (in-list blocks)]
         [i (in-naturals)])
-    (define port (open-input-string block))
-    (define has-valid-form
-      (with-handlers ([exn:fail? (lambda (e) #f)])
-        (define stx (read-syntax 'validator port))
-        (not (eof-object? stx))))
-    (define msg (hash 'type "validation" 'index i 'valid has-valid-form))
+    (define msg (hash 'type "validation" 'index i 'valid (block-evaluable? block)))
     (displayln (jsexpr->string msg) (current-repl-output-port))
     (flush-output (current-repl-output-port))))
 
@@ -597,14 +652,40 @@
       (check-regexp-match #px"READY\n" (get-output-string out-port))
       (check-false (hash-has-key? document-evaluators "test-uri"))))
 
-  (test-case "REPL parse"
-    (let* ([in-port (open-input-string "{\"type\": \"parse\", \"uri\": \"test-uri\", \"content\": \"(define x 1)\"}\n")]
+  (test-case "REPL parse blocks"
+    (let* ([content "#lang racket\n(+ 1 2)\n\n(+ 3 4)"]
+           [in-port (open-input-string (jsexpr->string (hash 'type "parse" 'uri "test-uri" 'content content)))]
            [out-port (open-output-string)])
       (parameterize ([current-repl-output-port out-port]
                      [current-input-port in-port])
         (run-repl))
       (let ([output (get-output-string out-port)])
-        (check-regexp-match #px"\"type\":\"range\"" output)
+        (check-regexp-match #px"\"line\":1" output)
+        (check-regexp-match #px"\"span\":20" output)
+        (check-regexp-match #px"\"line\":4" output)
+        (check-regexp-match #px"\"span\":7" output)
+        (check-regexp-match #px"READY\n" output))))
+
+  (test-case "REPL parse multi-paragraph markdown"
+    (let* ([content "#lang racket\n(define x 10)\n\n#| markdown\nPara 1\n\nPara 2\n|#\n\n(define y 20)\n\n#| markdown Unclosed"]
+           [in-port (open-input-string (jsexpr->string (hash 'type "parse" 'uri "test-uri" 'content content)))]
+           [out-port (open-output-string)])
+      (parameterize ([current-repl-output-port out-port]
+                     [current-input-port in-port])
+        (run-repl))
+      (let ([output (get-output-string out-port)])
+        ;; Block 1: Code
+        (check-regexp-match #px"\"line\":1" output)
+        (check-regexp-match #px"\"kind\":\"code\"" output)
+        ;; Block 2: Markdown (with Para 1\n\nPara 2)
+        (check-regexp-match #px"\"line\":4" output)
+        (check-regexp-match #px"\"kind\":\"markdown\"" output)
+        ;; Block 3: Code
+        (check-regexp-match #px"\"line\":10" output)
+        (check-regexp-match #px"\"kind\":\"code\"" output)
+        ;; Block 4: Markdown (Unclosed)
+        (check-regexp-match #px"\"line\":12" output)
+        (check-regexp-match #px"\"kind\":\"markdown\"" output)
         (check-regexp-match #px"READY\n" output))))
 
   (test-case "REPL evaluate and cancel"

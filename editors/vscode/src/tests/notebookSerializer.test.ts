@@ -125,5 +125,25 @@ describe('SchemeNotebookSerializer', () => {
             expect(data.cells[0].value).toBe('1');
             expect(data.cells[1].value).toBe('2');
         });
+
+        it('handles complex mixed content with multi-paragraph markdown', async () => {
+            const text = `#lang racket\n(define x 10)\n\n#| markdown\nPara 1\n\nPara 2\n|#\n\n(define y 20)\n\n#| markdown Unclosed`;
+            const content = new TextEncoder().encode(text);
+            const data = await serializer.deserializeNotebook(content, token);
+
+            expect(data.cells.length).toBe(4);
+            
+            expect(data.cells[0].kind).toBe(vscode.NotebookCellKind.Code);
+            expect(data.cells[0].value).toBe('#lang racket\n(define x 10)');
+
+            expect(data.cells[1].kind).toBe(vscode.NotebookCellKind.Markup);
+            expect(data.cells[1].value).toBe('Para 1\n\nPara 2');
+
+            expect(data.cells[2].kind).toBe(vscode.NotebookCellKind.Code);
+            expect(data.cells[2].value).toBe('(define y 20)');
+
+            expect(data.cells[3].kind).toBe(vscode.NotebookCellKind.Markup);
+            expect(data.cells[3].value).toBe('Unclosed');
+        });
     });
 });
