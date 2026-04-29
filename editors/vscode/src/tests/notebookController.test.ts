@@ -19,7 +19,11 @@ describe('SchemeNotebookController', () => {
             start: jest.fn(),
             clearOutput: jest.fn(),
             appendOutput: jest.fn().mockResolvedValue(undefined),
-            end: jest.fn()
+            replaceOutputItems: jest.fn().mockResolvedValue(undefined),
+            end: jest.fn(),
+            cell: {
+                outputs: []
+            }
         };
 
         // Mock createNotebookController to return a mock controller
