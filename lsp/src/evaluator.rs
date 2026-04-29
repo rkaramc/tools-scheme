@@ -294,7 +294,13 @@ impl Evaluator {
         Ok(self.state.as_mut().unwrap())
     }
 
-    fn send_command<F>(&mut self, req: &serde_json::Value, mut on_line: F) -> Result<()>
+    fn send_command<F>(
+        &mut self, 
+        req: &serde_json::Value, 
+        cancel_info: Option<(&crossbeam_channel::Receiver<u32>, u32, &str)>,
+        log_file: Option<&File>,
+        mut on_line: F
+    ) -> Result<()>
     where
         F: FnMut(&str),
     {
@@ -316,18 +322,52 @@ impl Evaluator {
 
         loop {
             let state = self.state.as_mut().unwrap();
-            let buffer = match state.stdout_rx.recv_timeout(self.timeout) {
-                Ok(l) => l,
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    if let Some(mut state) = self.state.take() {
-                        let _ = state.child.kill();
-                        let _ = state.child.wait();
+            let buffer = if let Some((rx, id, uri)) = cancel_info {
+                crossbeam_channel::select! {
+                    recv(state.stdout_rx) -> msg => match msg {
+                        Ok(l) => l,
+                        Err(_) => {
+                            self.state.take();
+                            return Err(anyhow!("REPL process exited unexpectedly"));
+                        }
+                    },
+                    recv(rx) -> msg => {
+                        if let Ok(cancel_id) = msg {
+                            if cancel_id == id {
+                                let cancel_req = serde_json::json!({
+                                    "type": "cancel-evaluation",
+                                    "uri": uri
+                                });
+                                let mut cancel_line = serde_json::to_string(&cancel_req).unwrap();
+                                cancel_line.push('\n');
+                                let _ = state.stdin_tx.send(cancel_line);
+                            }
+                        }
+                        // Wait for the next message
+                        continue;
                     }
-                    return Err(anyhow!("Command timed out after {:?}", self.timeout));
+                    default(self.timeout) => {
+                        if let Some(mut state) = self.state.take() {
+                            let _ = state.child.kill();
+                            let _ = state.child.wait();
+                        }
+                        return Err(anyhow!("Command timed out after {:?}", self.timeout));
+                    }
                 }
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                    self.state.take();
-                    return Err(anyhow!("REPL process exited unexpectedly"));
+            } else {
+                match state.stdout_rx.recv_timeout(self.timeout) {
+                    Ok(l) => l,
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                        if let Some(mut state) = self.state.take() {
+                            let _ = state.child.kill();
+                            let _ = state.child.wait();
+                        }
+                        return Err(anyhow!("Command timed out after {:?}", self.timeout));
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                        self.state.take();
+                        return Err(anyhow!("REPL process exited unexpectedly"));
+                    }
                 }
             };
 
@@ -337,6 +377,14 @@ impl Evaluator {
             }
 
             on_line(&buffer);
+
+            if let Some(mut file) = log_file {
+                let _ = writeln!(file, "{}", buffer);
+                let _ = file.flush();
+            } else {
+                let _ = writeln!(&mut self.global_session, "{}", buffer);
+                let _ = self.global_session.flush();
+            }
         }
 
         Ok(())
@@ -351,34 +399,15 @@ impl Evaluator {
     }
 
     pub fn evaluate_str(&mut self, content: &str, uri: Option<&str>, context_label: Option<&str>, log: Option<&File>) -> Result<Vec<EvalResult>> {
-        let has_log = log.is_some();
+        let label = context_label.or(uri).unwrap_or("UNKNOWN");
         
-        // Unfortunately we can't easily borrow the global_session mutably inside the closure
-        // if we use send_command. Actually, we can if we take it out or use interior mutability, 
-        // but let's just log directly if it's the global session.
-        if !has_log {
-            let label = context_label.or(uri).unwrap_or("UNKNOWN");
-            writeln!(&mut self.global_session, "\n--- EVAL INPUT NO LOG ({}) ---\n{}\n--- EVAL OUTPUT ---", label, content)?;
-            self.global_session.flush()?;
-        }
-        
-        // Because of the log file borrowing issues, we'll keep evaluate_str's loop as is for now,
-        // or we could use the new send_command if we handle logging differently.
-        // Let's keep it for clear_namespace and validate_blocks first.
         if let Some(mut file) = log {
-            if let Some(label) = context_label {
-                writeln!(file, "\n--- EVAL INPUT ({}) ---\n{}\n--- EVAL OUTPUT ---", label, content)?;
-            } else {
-                writeln!(file, "\n--- EVAL INPUT ---\n{}\n--- EVAL OUTPUT ---", content)?;
-            }
+            writeln!(file, "\n--- EVAL INPUT ({}) ---\n{}\n--- EVAL OUTPUT ---", label, content)?;
             file.flush()?;
         } else {
-            let label = context_label.or(uri).unwrap_or("UNKNOWN");
             writeln!(&mut self.global_session, "\n--- EVAL INPUT NO LOG ({}) ---\n{}\n--- EVAL OUTPUT ---", label, content)?;
             self.global_session.flush()?;
         }
-
-        let state = self.ensure_alive()?;
 
         let req = serde_json::json!({
             "type": "evaluate",
@@ -386,76 +415,44 @@ impl Evaluator {
             "uri": uri
         });
 
-        
-        let mut line = serde_json::to_string(&req)?;
-        line.push('\n');
-        
-        let mut retry = false;
-        if state.stdin_tx.send(line.clone()).is_err() {
-            retry = true;
-        }
-
-        if retry {
-            // If pipe is broken, kill the state and retry once
-            self.state.take();
-            let new_state = self.ensure_alive()?;
-            let _ = new_state.stdin_tx.send(line);
-        }
-
         let mut results = Vec::new();
         
-        loop {
-            // Re-borrow state since we might have replaced it above
-            let state = self.state.as_mut().unwrap();
-            
-            let buffer = match state.stdout_rx.recv_timeout(self.timeout) {
-                Ok(l) => l,
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    // Timeout occurred: kill the process and return error
-                    // The next call will restart it via ensure_alive
-                    if let Some(mut state) = self.state.take() {
-                        let _ = state.child.kill();
-                        let _ = state.child.wait();
-                    }
-                    return Err(anyhow!("Evaluation timed out after {:?}", self.timeout));
-                }
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                    self.state.take();
-                    return Err(anyhow!("REPL process exited unexpectedly"));
-                }
-            };
-
-            if let Some(mut file) = log {
-                writeln!(file, "{}", buffer)?;
-                file.flush()?;
-            } else {
-                writeln!(&mut self.global_session, "{}", buffer)?;
-                self.global_session.flush()?;
-            }
-            
+        self.send_command(&req, None, log, |buffer| {
             let trimmed = buffer.trim();
-            if trimmed == "READY" {
-                break;
-            }
-            
             if let Ok(res) = serde_json::from_str::<EvalResult>(trimmed) {
                 results.push(res);
             }
-        }
+        })?;
 
         Ok(results)
     }
 
     #[allow(unused)]
-    pub fn clear_namespace(&mut self, uri: &str) -> Result<()> {
+    pub fn clear_namespace(&mut self, uri: &str, log: Option<&File>) -> Result<()> {
+        if let Some(mut file) = log {
+            writeln!(file, "\n--- SYSTEM COMMAND: clear-namespace ({}) ---", uri)?;
+            file.flush()?;
+        } else {
+            writeln!(&mut self.global_session, "\n--- SYSTEM COMMAND: clear-namespace ({}) ---", uri)?;
+            self.global_session.flush()?;
+        }
+
         let req = serde_json::json!({
             "type": "clear-namespace",
             "uri": uri
         });
-        self.send_command(&req, |_| {})
+        self.send_command(&req, None, log, |_| {})
     }
 
-    pub fn validate_blocks(&mut self, blocks: Vec<String>) -> Result<Vec<bool>> {
+    pub fn validate_blocks(&mut self, blocks: Vec<String>, log: Option<&File>) -> Result<Vec<bool>> {
+        if let Some(mut file) = log {
+            writeln!(file, "\n--- SYSTEM COMMAND: validate-blocks ({} blocks) ---", blocks.len())?;
+            file.flush()?;
+        } else {
+            writeln!(&mut self.global_session, "\n--- SYSTEM COMMAND: validate-blocks ({} blocks) ---", blocks.len())?;
+            self.global_session.flush()?;
+        }
+
         let req = serde_json::json!({
             "type": "validate-blocks",
             "blocks": blocks
@@ -463,7 +460,7 @@ impl Evaluator {
 
         let mut results = vec![false; blocks.len()];
 
-        self.send_command(&req, |trimmed| {
+        self.send_command(&req, None, log, |trimmed| {
             if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(trimmed) {
                 if json_val.get("type").and_then(|v| v.as_str()) == Some("validation") {
                     let index = json_val.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
@@ -477,7 +474,33 @@ impl Evaluator {
 
         Ok(results)
     }
+
+    pub fn evaluate_notebook_cell<F>(
+        &mut self, 
+        content: &str, 
+        uri: &str, 
+        cancel_rx: &crossbeam_channel::Receiver<u32>,
+        execution_id: u32,
+        mut on_line: F
+    ) -> Result<()> 
+    where 
+        F: FnMut(&str)
+    {
+        writeln!(&mut self.global_session, "\n--- EVAL CELL INPUT NO LOG ({}) ---\n{}\n--- EVAL CELL OUTPUT ---", uri, content)?;
+        self.global_session.flush()?;
+
+        let req = serde_json::json!({
+            "type": "evaluate",
+            "content": content,
+            "uri": uri
+        });
+
+        self.send_command(&req, Some((cancel_rx, execution_id, uri)), None, |buffer| {
+            on_line(buffer.trim());
+        })
+    }
 }
+
 
 impl Drop for Evaluator {
     fn drop(&mut self) {
@@ -588,7 +611,7 @@ mod tests {
         assert!(res_b1[0].is_error, "x should be undefined in document B");
         
         // 4. Clear doc A and access x (should fail)
-        evaluator.clear_namespace("file:///a.rkt").unwrap();
+        evaluator.clear_namespace("file:///a.rkt", None).unwrap();
         let res_a3 = evaluator.evaluate_str("x", Some("file:///a.rkt"), None, None).unwrap();
         assert!(res_a3[0].is_error, "x should be undefined in document A after clear");
     }
@@ -861,92 +884,3 @@ mod tests {
         let _ = std::fs::remove_file(&log_path);
     }
 }
-
-impl Evaluator {
-    pub fn evaluate_notebook_cell<F>(
-        &mut self, 
-        content: &str, 
-        uri: &str, 
-        cancel_rx: &crossbeam_channel::Receiver<u32>,
-        execution_id: u32,
-        mut on_line: F
-    ) -> Result<()> 
-    where 
-        F: FnMut(&str)
-    {
-        let label = uri;
-        writeln!(&mut self.global_session, "\n--- EVAL CELL INPUT NO LOG ({}) ---\n{}\n--- EVAL CELL OUTPUT ---", label, content)?;
-        self.global_session.flush()?;
-
-        let state = self.ensure_alive()?;
-        
-        let req = serde_json::json!({
-            "type": "evaluate",
-            "content": content,
-            "uri": uri
-        });
-
-        let mut line = serde_json::to_string(&req)?;
-        line.push('\n');
-        
-        let mut retry = false;
-        if state.stdin_tx.send(line.clone()).is_err() {
-            retry = true;
-        }
-
-        if retry {
-            self.state.take();
-            let new_state = self.ensure_alive()?;
-            new_state.stdin_tx.send(line)?;
-        }
-        
-        loop {
-            let state = self.state.as_mut().unwrap();
-            
-            let buffer = crossbeam_channel::select! {
-                recv(state.stdout_rx) -> msg => match msg {
-                    Ok(l) => l,
-                    Err(_) => {
-                        self.state.take();
-                        return Err(anyhow!("REPL process exited unexpectedly"));
-                    }
-                },
-                recv(cancel_rx) -> msg => {
-                    if let Ok(cancel_id) = msg {
-                        if cancel_id == execution_id {
-                            let cancel_req = serde_json::json!({
-                                "type": "cancel-evaluation",
-                                "uri": uri
-                            });
-                            let mut cancel_line = serde_json::to_string(&cancel_req).unwrap();
-                            cancel_line.push('\n');
-                            let _ = state.stdin_tx.send(cancel_line);
-                        }
-                    }
-                    // Wait for the next message
-                    continue;
-                }
-                default(self.timeout) => {
-                    if let Some(mut state) = self.state.take() {
-                        let _ = state.child.kill();
-                        let _ = state.child.wait();
-                    }
-                    return Err(anyhow!("Evaluation timed out after {:?}", self.timeout));
-                }
-            };
-
-            writeln!(&mut self.global_session, "{}", buffer)?;
-            self.global_session.flush()?;
-            
-            let trimmed = buffer.trim();
-            if trimmed == "READY" {
-                break;
-            }
-            
-            on_line(trimmed);
-        }
-
-        Ok(())
-    }
-}
-
