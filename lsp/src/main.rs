@@ -7,7 +7,7 @@ use std::error::Error;
 use std::sync::{Arc, RwLock};
 
 use scheme_toolbox_lsp::server::{Server, SharedState};
-use scheme_toolbox_lsp::worker::eval_worker;
+use scheme_toolbox_lsp::worker::{eval_worker, analysis_worker};
 use scheme_toolbox_lsp::documents::DocumentStore;
 use scheme_toolbox_lsp::evaluator::Evaluator;
 
@@ -42,10 +42,16 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let evaluator = Evaluator::new(racket_path)
+    let evaluator = Evaluator::new(racket_path.clone())
         .map_err(|e| {
             eprintln!("LSP Initialization Error: {}", e);
             format!("Failed to initialize evaluator: {}", e)
+        })?;
+        
+    let analysis_evaluator = Evaluator::new(racket_path)
+        .map_err(|e| {
+            eprintln!("LSP Initialization Error: {}", e);
+            format!("Failed to initialize analysis evaluator: {}", e)
         })?;
 
     eprintln!("LSP Initialization: Racket Evaluator started successfully.");
@@ -59,6 +65,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     // Bounded channel to prevent OOM when user typing triggers many parses.
     // Stale tasks are handled via version checking or dropping.
     let (eval_tx, eval_rx) = crossbeam_channel::bounded(10);
+    let (analysis_tx, analysis_rx) = crossbeam_channel::bounded(10);
     let (cancel_tx, cancel_rx) = crossbeam_channel::unbounded::<u32>();
 
     // Spawn the eval worker. It owns the Evaluator (and thus the Racket REPL
@@ -69,8 +76,15 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         eval_worker(evaluator, eval_rx, cancel_rx, worker_state, worker_sender);
     });
 
+    let analysis_worker_state = Arc::clone(&state);
+    let analysis_worker_sender = connection.sender.clone();
+    let analysis_worker_handle = std::thread::spawn(move || {
+        analysis_worker(analysis_evaluator, analysis_rx, analysis_worker_state, analysis_worker_sender);
+    });
+
     let mut server = Server {
         eval_tx,
+        analysis_tx,
         cancel_tx,
         state,
     };
@@ -80,8 +94,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     eprintln!("LSP Main: loop finished, dropping server");
     drop(server);
 
-    eprintln!("LSP Main: joining worker thread");
+    eprintln!("LSP Main: joining worker threads");
     worker_handle.join().map_err(|_| "Worker thread panicked")?;
+    analysis_worker_handle.join().map_err(|_| "Analysis Worker thread panicked")?;
 
     // Explicitly drop connection to close the writer channel, allowing IO threads to exit.
     drop(connection);

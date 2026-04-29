@@ -79,6 +79,7 @@ pub enum SchemeCommand {
 
 pub struct Server {
     pub eval_tx: crossbeam_channel::Sender<EvalTask>,
+    pub analysis_tx: crossbeam_channel::Sender<EvalTask>,
     pub cancel_tx: crossbeam_channel::Sender<u32>,
     pub state: Arc<RwLock<SharedState>>,
 }
@@ -141,11 +142,11 @@ impl Server {
                 self.write_state().document_store.open(params.text_document);
                 
                 // Trigger background parse immediately on open to populate ranges for CodeLens
-                if let Err(e) = self.eval_tx.send(EvalTask {
+                if let Err(e) = self.analysis_tx.send(EvalTask {
                     uri,
                     action: EvalAction::Parse { version },
                 }) {
-                    eprintln!("eval_tx channel full, dropping initial parse task: {}", e);
+                    eprintln!("analysis_tx channel full, dropping initial parse task: {}", e);
                 }
                 Ok(())
             })?
@@ -160,11 +161,11 @@ impl Server {
                 }
                 
                 // Submit background parse task
-                if let Err(e) = self.eval_tx.send(EvalTask {
+                if let Err(e) = self.analysis_tx.send(EvalTask {
                     uri,
                     action: EvalAction::Parse { version },
                 }) {
-                    eprintln!("eval_tx channel full, dropping parse task: {}", e);
+                    eprintln!("analysis_tx channel full, dropping parse task: {}", e);
                 }
                 Ok(())
             })?
@@ -307,6 +308,12 @@ impl Server {
                     action: EvalAction::Restart,
                 }) {
                     eprintln!("eval_tx channel full, dropping restart task: {}", e);
+                }
+                if let Err(e) = self.analysis_tx.send(EvalTask {
+                    uri: "dummy".to_string(), // Restart is global
+                    action: EvalAction::Restart,
+                }) {
+                    eprintln!("analysis_tx channel full, dropping restart task: {}", e);
                 }
             }
             Err(e) => {
