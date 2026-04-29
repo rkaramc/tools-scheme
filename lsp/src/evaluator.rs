@@ -10,7 +10,7 @@ use crossbeam_channel::Receiver;
 const SHIM_SOURCE: &str = include_str!("eval-shim.rkt");
 const TEMP_SUBDIR: &str = "vscode-scheme-toolbox-lsp";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EvalResult {
     pub line: u32,
     pub col: u32,
@@ -26,9 +26,11 @@ pub struct EvalResult {
     pub is_error: bool,
     #[serde(default)]
     pub output: String,
+    #[serde(default)]
+    pub kind: String, // "code" or "markdown"
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RangeResult {
     pub line: u32,
     pub col: u32,
@@ -38,6 +40,10 @@ pub struct RangeResult {
     pub span: u32,
     #[serde(default)]
     pub pos: u32,
+    #[serde(default)]
+    pub kind: String, // "code" or "markdown"
+    #[serde(default)]
+    pub valid: bool,
 }
 
 struct ProcessState {
@@ -421,6 +427,27 @@ impl Evaluator {
             let trimmed = buffer.trim();
             if let Ok(res) = serde_json::from_str::<EvalResult>(trimmed) {
                 results.push(res);
+            }
+        })?;
+
+        Ok(results)
+    }
+
+    pub fn parse(&mut self, content: &str, uri: Option<&str>) -> Result<Vec<RangeResult>> {
+        let req = serde_json::json!({
+            "type": "parse",
+            "content": content,
+            "uri": uri
+        });
+
+        let mut results = Vec::new();
+        self.send_command(&req, None, None, |trimmed| {
+            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if json_val.get("type").and_then(|v| v.as_str()) == Some("range") {
+                    if let Ok(res) = serde_json::from_value::<RangeResult>(json_val) {
+                        results.push(res);
+                    }
+                }
             }
         })?;
 

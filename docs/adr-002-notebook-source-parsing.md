@@ -6,19 +6,31 @@ This document outlines the architecture and implementation strategy for parsing 
 
 The goal is to provide a consistent experience between standard Racket files (`.rkt`) and Racket Notebooks. A key UX requirement is that users should be able to group related forms into a single "cell" or "block" for evaluation and visualization. We have decided to use **empty lines** (two or more consecutive newlines) as the primary mechanism for delineating these blocks.
 
-## 2. Current Implementation
+## 2. Legacy Implementation (Pre-Refactor)
 
-The current implementation is fragmented between the VS Code extension and the Language Server Protocol (LSP) server.
-
-### VS Code Extension (`editors/vscode/`)
-- **`NotebookSerializer`**: Correctlies implements the cell-breaking logic during deserialization of `.rkt` files into notebooks.
-- **Logic**: It uses `/(?:\r?\n[ \t]*){2,}/` to split code blocks and `/#\|\s*markdown\s*\n?/g` to identify and extract markdown cells.
-- **Result**: When a `.rkt` file is opened as a notebook, each block of code separated by an empty line becomes a separate interactive cell.
+Prior to this architecture, the implementation was fragmented and relied on different parsing models:
 
 ### LSP Server (`lsp/`)
-- **Parsing**: The LSP server currently uses Racket's `read-syntax` in `eval-shim.rkt` to identify top-level forms.
-- **Problem**: `read-syntax` ignores all whitespace, including empty lines. This means every individual S-expression is treated as a standalone entity for CodeLenses and diagnostics.
-- **CodeLens**: In a standard editor, every single `(define ...)` or `(check-equal? ...)` gets its own "Run" lens, leading to visual clutter when many small forms are grouped together.
+- **S-expression Parsing**: The server used Racket's `read-syntax` directly. Since the reader ignores whitespace, every individual S-expression (e.g., each `define`) was treated as a standalone entity.
+- **CodeLens Spam**: This resulted in excessive "Run" lenses in the standard editor, as every single top-level form received its own button, even when grouped together.
+- **No Markdown Awareness**: Documentation blocks (`#| markdown |#`) were treated as regular comments and skipped by the LSP metadata pass.
+
+### VS Code Extension (`editors/vscode/`)
+- **Fragmented Logic**: The `NotebookSerializer` correctly grouped code by empty lines, but this logic was entirely decoupled from the LSP.
+- **Inconsistency**: A file opened as a Notebook and the same file opened as Source Code had different logical boundaries, leading to a disjointed user experience.
+
+## 3. Current Implementation
+
+### VS Code Extension (`editors/vscode/`)
+- **`NotebookSerializer`**: Implements the cell-breaking logic during deserialization of `.rkt` files into notebooks.
+- **Strategy**: Uses a **scan-first** approach: it identifies `#| markdown |#` blocks first, then segments the remaining code using the empty-line regex `(?m:(\r?\n[ \t]*){2,})`.
+- **Role**: Essential for building the Notebook UI cells independently of the LSP.
+
+### Unified Racket-Side Parsing (`lsp/`)
+- **`eval-shim.rkt`**: Implements an identical **scan-first** structural parser to the VS Code extension.
+- **Protocol**: The `parse` command returns unified metadata (`kind`, `valid`, `pos`, `span`).
+- **Rust Integration**: `worker.rs` delegates all parsing to Racket and uses `LineIndex` for precise coordinate mapping.
+- **Consistency**: This approach ensures that `.rkt` files opened in standard editors and the VS Code Notebook UI see identical cell/block boundaries.
 
 ## 3. Ideal Parse Procedure
 
@@ -47,12 +59,12 @@ Each physical block (that is not a markdown block) is then passed to the Racket 
 
 ## 4. Remaining Work (ts-79s / ts-9al)
 
-The following tasks are required to align the LSP with this ADR:
+The following tasks have been completed:
 
-1.  **Update `eval-shim.rkt`**: Modify `parse-string-content` to first split by the empty-line regex before calling `for-each-syntax`. It should also detect `#| markdown |#` blocks and return them with a specific `type: "markdown"` range.
-2.  **LSP Worker Logic**: Update `on_parse` in `worker.rs` to handle these grouped ranges and ignore markdown blocks for evaluation tasks.
-3.  **CodeLens Refactoring**: Modify `server.rs` (`handle_code_lens`) to ensure it only generates one lens per logical block.
-4.  **Integration Tests**: Add tests to `integration.rs` verifying that multiple forms separated by a single newline get one lens, while forms separated by two newlines get two separate lenses.
+1.  **[x] Update `eval-shim.rkt`**: Refactored `parse-string-content` with a scan-first structural strategy and flexible markdown regex.
+2.  **[x] LSP Worker Logic**: Refactored `on_parse` in `worker.rs` to use unified Racket parsing and accurate byte-to-range mapping.
+3.  **[x] CodeLens Refactoring**: Standardized CodeLens generation to use the unified logical blocks.
+4.  **[x] Integration Tests**: Added comprehensive cross-language unit tests ensuring equivalent parsing across VS Code and Racket.
 
 ## 5. Decision and Rationale
 

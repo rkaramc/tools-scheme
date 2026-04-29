@@ -228,53 +228,26 @@ fn on_parse(
             return;
         }
 
-        // Split by empty lines: (?m)(?:\r?\n[ \t]*){2,}
-        // We need to keep track of the ranges.
-        let re = regex::Regex::new(r"(?m)(?:\r?\n[ \t]*){2,}").unwrap();
-        
-        let mut blocks = Vec::new();
-        let mut last_end = 0;
-        for m in re.find_iter(&c) {
-            if m.start() > last_end {
-                blocks.push(&c[last_end..m.start()]);
+        // Use unified parser from Racket shim
+        let ranges = match evaluator.parse(&c, Some(uri_str)) {
+            Ok(r) => r,
+            Err(e) => {
+                evaluator.log(&format!("Parse error: {}", e));
+                return;
             }
-            last_end = m.end();
-        }
-        if last_end < c.len() {
-            blocks.push(&c[last_end..]);
-        }
-
-        evaluator.log(&format!("Split into {} physical blocks", blocks.len()));
-
-        let block_strings: Vec<String> = blocks.iter().map(|s| s.to_string()).collect();
-        let validation_results = evaluator.validate_blocks(block_strings).unwrap_or_default();
+        };
 
         let mut lock = state.write_recovered();
         if let Some(doc) = lock.document_store.get_mut(uri_str) {
             let mut final_ranges = Vec::new();
-            let mut last_end = 0;
-            let mut i = 0;
-
-            let mut process_block = |start: usize, end: usize, idx: usize| {
-                let block_text = &c[start..end];
-                let is_markdown = block_text.contains("#| markdown") && block_text.contains("|#");
-                let is_valid = validation_results.get(idx).cloned().unwrap_or(false);
-
-                if is_valid && !is_markdown {
-                    let range = doc.line_index.offset_to_range(&c, start, end);
+            for r in ranges {
+                // Only show CodeLens for code blocks that are syntactically valid
+                if r.kind == "code" && r.valid {
+                    let start_offset = (r.pos.saturating_sub(1)) as usize;
+                    let end_offset = start_offset + (r.span as usize);
+                    let range = doc.line_index.offset_to_range(&c, start_offset, end_offset);
                     final_ranges.push(range);
                 }
-            };
-
-            for m in re.find_iter(&c) {
-                if m.start() > last_end {
-                    process_block(last_end, m.start(), i);
-                    i += 1;
-                }
-                last_end = m.end();
-            }
-            if last_end < c.len() {
-                process_block(last_end, c.len(), i);
             }
 
             doc.ranges = final_ranges;
@@ -292,8 +265,11 @@ fn on_clear(
     sender: &crossbeam_channel::Sender<Message>,
     uri_str: &str,
 ) {
-    evaluator.log(&format!("EvalAction::Clear for {}", uri_str));
-    let _ = evaluator.clear_namespace(uri_str);
+    {
+        let lock = state.read_recovered();
+        let log = lock.document_store.get(uri_str).and_then(|doc| doc.session_file.as_ref());
+        let _ = evaluator.clear_namespace(uri_str, log);
+    }
     let mut lock = state.write_recovered();
     if let Some(doc) = lock.document_store.get_mut(uri_str) {
         doc.results.clear();
@@ -392,7 +368,8 @@ mod tests {
     fn make_res(pos: u32, val: &str) -> EvalResult {
         EvalResult {
             line: 1, col: 0, end_line: 1, end_col: 0, span: 0,
-            pos, result: val.to_string(), is_error: false, output: "".to_string()
+            pos, result: val.to_string(), is_error: false, output: "".to_string(),
+            kind: "code".to_string()
         }
     }
 

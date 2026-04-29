@@ -67,6 +67,7 @@ mod tests {
                 result: "10".to_string(),
                 is_error: false,
                 output: "10\n".to_string(), // Output same as result (trimmed)
+                kind: "code".to_string(),
             }
         ];
         let hints = results_to_hints(&results, None, None, None);
@@ -90,6 +91,7 @@ mod tests {
                 result: "other".to_string(),
                 is_error: false,
                 output: "hello".to_string(), // Output different from result
+                kind: "code".to_string(),
             }
         ];
         let hints = results_to_hints(&results, None, None, None);
@@ -112,6 +114,7 @@ mod tests {
             result: "'void".to_string(),
             is_error: false,
             output: "hello\nworld".to_string(),
+            kind: "code".to_string(),
         }];
         let hints = results_to_hints(&results, None, None, None);
         assert_eq!(hints.len(), 1);

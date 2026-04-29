@@ -4,7 +4,7 @@
 Unify the parsing logic between Racket Notebooks and standard `.rkt` files by using empty lines (two or more consecutive newlines) as logical delimiters for code blocks. This provides a "Notebook-like" experience in the standard editor by generating a single CodeLens per physical block rather than per top-level form.
 
 ## Assumptions
-- The user has chosen a **Rust-side split** strategy where Rust handles the regex-based chunking of the file buffer.
+- The user has chosen a **Racket-side split** strategy where the eval-shim handles the structural parsing (using a scan-first approach for markdown).
 - The CodeLens generated for a valid block will span the **entire physical block**, matching ADR defaults.
 - Markdown blocks enclosed in `#| markdown ... |#` are identified and treated as markdown cells.
 
@@ -25,20 +25,19 @@ Unify the parsing logic between Racket Notebooks and standard `.rkt` files by us
 
 ## Implementation Strategy
 
-### Rust-Side Splitting
-1. In `worker.rs` `on_parse`, instead of sending the entire document content to `evaluator.parse_str`, use a regex `(?m)(?:\r?\n[ \t]*){2,}` to split the `content` string into physical blocks.
-2. Keep track of the byte offset and line/col start/end for each block using `LineIndex`.
-
-### Markdown Detection
-1. For each block, check if it contains the markdown delimiter `#| markdown` and `|#`.
-2. If it is a markdown block, generate a range with a `markdown` flag but skip generating an executable CodeLens for it.
+### Racket-Side Structural Parsing
+1. In `eval-shim.rkt` `parse-string-content`, we use a **scan-first strategy**:
+   - First, scan for structural markdown delimiters (`#| markdown` and `|#`) to isolate documentation zones.
+   - Second, segment the remaining code text into physical blocks using the empty-line regex `(?m:(\r?\n[ \t]*){2,})`.
+2. This ensures that markdown blocks containing empty lines are preserved as a single unit, matching the VS Code extension's behavior.
 
 ### Semantic Validation
-1. **Latency Consideration**: To minimize IPC overhead while keeping responsiveness high, we will implement a batch-request, streaming-response validation approach.
-2. Add a new `validate-blocks` command to `eval-shim.rkt`.
-3. Rust will send a single JSON payload containing an array of block strings: `{"type": "validate-blocks", "blocks": [...]}`.
-4. Racket will use `read-syntax` on each block sequentially. Instead of waiting for all blocks to be processed, Racket will stream the validation result back immediately for each block (e.g., `{"index": 0, "valid": true}`) as it comes in.
-5. Rust listens for the streamed responses, collecting the valid blocks. For every `true` block, it generates an executable CodeLens range spanning the *entire* physical block. When `READY` is received, it finalizes the ranges.
+1. **Unified Pipeline**: To minimize IPC overhead, we unified segmentation and validation.
+2. The `parse` command in the REPL protocol now returns a stream of `range` objects, each containing:
+   - Byte `pos` and `span`.
+   - `kind` ("code" or "markdown").
+   - `valid` boolean (true if the block contains at least one evaluable Racket form).
+3. Rust uses the `LineIndex` to convert these byte offsets into precise LSP ranges.
 
 ## Testing Strategy
 - Add unit tests in Rust to verify the block regex splitting correctly computes offsets.
