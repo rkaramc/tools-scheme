@@ -17,6 +17,77 @@ pub trait MessageSender {
     fn send_diagnostics(&self, uri: lsp_types::Uri, diagnostics: Vec<Diagnostic>, version: Option<i32>);
     fn refresh_inlay_hints(&self);
     fn refresh_code_lenses(&self);
+    fn send_notification(&self, method: String, params: serde_json::Value);
+}
+
+pub struct DiagnosticTask {
+    pub uri: lsp_types::Uri,
+    pub diagnostics: Vec<Diagnostic>,
+    pub version: Option<i32>,
+}
+
+pub struct DiagnosticWorkerSender {
+    pub lsp_sender: crossbeam_channel::Sender<Message>,
+    pub diagnostic_tx: crossbeam_channel::Sender<DiagnosticTask>,
+}
+
+impl MessageSender for DiagnosticWorkerSender {
+    fn send_diagnostics(&self, uri: lsp_types::Uri, diagnostics: Vec<Diagnostic>, version: Option<i32>) {
+        let _ = self.diagnostic_tx.send(DiagnosticTask { uri, diagnostics, version });
+    }
+
+    fn refresh_inlay_hints(&self) {
+        let id = NEXT_REQ_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let req = Request::new(RequestId::from(id), "workspace/inlayHint/refresh".to_string(), serde_json::json!(null));
+        let _ = self.lsp_sender.send(Message::Request(req));
+    }
+
+    fn refresh_code_lenses(&self) {
+        let id = NEXT_REQ_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let req = Request::new(RequestId::from(id), "workspace/codeLens/refresh".to_string(), serde_json::json!(null));
+        let _ = self.lsp_sender.send(Message::Request(req));
+    }
+
+    fn send_notification(&self, method: String, params: serde_json::Value) {
+        let not = lsp_server::Notification::new(method, params);
+        let _ = self.lsp_sender.send(Message::Notification(not));
+    }
+}
+
+pub fn diagnostic_worker(
+    rx: crossbeam_channel::Receiver<DiagnosticTask>,
+    sender: crossbeam_channel::Sender<Message>,
+) {
+    let mut pending: std::collections::HashMap<lsp_types::Uri, DiagnosticTask> = std::collections::HashMap::new();
+    let is_test = std::env::var("TOOLS_SCHEME_TEST").is_ok();
+    let debounce_ms = if is_test { 0 } else { 200 };
+
+    loop {
+        match rx.recv() {
+            Ok(task) => {
+                pending.insert(task.uri.clone(), task);
+                
+                // Keep collecting as long as they come in fast
+                if debounce_ms > 0 {
+                    while let Ok(task) = rx.recv_timeout(std::time::Duration::from_millis(debounce_ms)) {
+                        pending.insert(task.uri.clone(), task);
+                    }
+                }
+                
+                // Silence reached or immediate mode (debounce_ms == 0), flush all
+                for (_, task) in pending.drain() {
+                    let diag_params = PublishDiagnosticsParams { 
+                        uri: task.uri, 
+                        diagnostics: task.diagnostics, 
+                        version: task.version 
+                    };
+                    let not = lsp_server::Notification::new(PublishDiagnostics::METHOD.to_string(), diag_params);
+                    let _ = sender.send(Message::Notification(not));
+                }
+            }
+            Err(_) => break, // Channel closed
+        }
+    }
 }
 
 impl MessageSender for crossbeam_channel::Sender<Message> {
@@ -36,6 +107,11 @@ impl MessageSender for crossbeam_channel::Sender<Message> {
         let id = NEXT_REQ_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let req = Request::new(RequestId::from(id), "workspace/codeLens/refresh".to_string(), serde_json::json!(null));
         let _ = self.send(Message::Request(req));
+    }
+
+    fn send_notification(&self, method: String, params: serde_json::Value) {
+        let not = lsp_server::Notification::new(method, params);
+        let _ = self.send(Message::Notification(not));
     }
 }
 
@@ -68,7 +144,7 @@ pub fn eval_worker(
     rx: crossbeam_channel::Receiver<EvalTask>,
     cancel_rx: crossbeam_channel::Receiver<u32>,
     state: Arc<RwLock<SharedState>>,
-    sender: crossbeam_channel::Sender<Message>,
+    sender: impl MessageSender,
 ) {
     for task in rx {
         match task.action {
@@ -97,11 +173,12 @@ pub fn analysis_worker(
     mut evaluator: Evaluator,
     rx: crossbeam_channel::Receiver<EvalTask>,
     state: Arc<RwLock<SharedState>>,
-    sender: crossbeam_channel::Sender<Message>,
+    sender: impl MessageSender,
 ) {
     for task in rx {
         match task.action {
             EvalAction::Parse { version } => {
+                // eprintln!("AnalysisWorker: Received Parse task for {} version {}", task.uri, version);
                 on_parse(&mut evaluator, &state, &sender, &task.uri, version);
             }
             EvalAction::Restart => {
@@ -123,7 +200,7 @@ pub fn analysis_worker(
 fn on_evaluate(
     evaluator: &mut Evaluator,
     state: &Arc<RwLock<SharedState>>,
-    sender: &crossbeam_channel::Sender<Message>,
+    sender: &impl MessageSender,
     uri_str: &str,
     content: String,
     version: Option<i32>,
@@ -252,7 +329,7 @@ fn on_evaluate(
 fn on_parse(
     evaluator: &mut Evaluator,
     state: &Arc<RwLock<SharedState>>,
-    sender: &crossbeam_channel::Sender<Message>,
+    sender: &impl MessageSender,
     uri_str: &str,
     version: i32,
 ) {
@@ -318,7 +395,7 @@ fn on_parse(
 fn on_clear(
     evaluator: &mut Evaluator,
     state: &Arc<RwLock<SharedState>>,
-    sender: &crossbeam_channel::Sender<Message>,
+    sender: &impl MessageSender,
     uri_str: &str,
 ) {
     {
@@ -344,7 +421,7 @@ fn on_clear(
 fn on_restart(
     evaluator: &mut Evaluator,
     state: &Arc<RwLock<SharedState>>,
-    sender: &crossbeam_channel::Sender<Message>,
+    sender: &impl MessageSender,
 ) {
     evaluator.log("EvalAction::Restart triggered");
     let _ = evaluator.restart();
@@ -372,6 +449,7 @@ fn on_restart(
     sender.refresh_inlay_hints();
     sender.refresh_code_lenses();
 }
+
 
 fn merge_results(existing: &mut Vec<EvalResult>, new_results: Vec<EvalResult>, byte_range: Option<(u32, u32)>) {
     if let Some((start, end)) = byte_range {
@@ -420,6 +498,7 @@ pub fn recalculate_from_byte_pos(results: &mut [EvalResult], text: &str, line_in
 mod tests {
     use super::*;
     use crate::evaluator::EvalResult;
+    use std::time::Duration;
 
     fn make_res(pos: u32, val: &str) -> EvalResult {
         EvalResult {
@@ -427,6 +506,53 @@ mod tests {
             pos, result: val.to_string(), is_error: false, output: "".to_string(),
             kind: "code".to_string()
         }
+    }
+
+    #[test]
+    fn test_diagnostic_worker_debounce() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let (lsp_tx, lsp_rx) = crossbeam_channel::unbounded();
+        
+        let _handle = std::thread::spawn(move || {
+            diagnostic_worker(rx, lsp_tx);
+        });
+
+        let uri = lsp_types::Uri::from_str("file:///test.rkt").unwrap();
+        
+        // Send 3 tasks quickly
+        tx.send(DiagnosticTask { 
+            uri: uri.clone(), 
+            diagnostics: vec![Diagnostic { message: "error 1".to_string(), ..Default::default() }],
+            version: Some(1)
+        }).unwrap();
+        tx.send(DiagnosticTask { 
+            uri: uri.clone(), 
+            diagnostics: vec![Diagnostic { message: "error 2".to_string(), ..Default::default() }],
+            version: Some(2)
+        }).unwrap();
+        tx.send(DiagnosticTask { 
+            uri: uri.clone(), 
+            diagnostics: vec![Diagnostic { message: "error 3".to_string(), ..Default::default() }],
+            version: Some(3)
+        }).unwrap();
+
+        // Wait for it to flush (debounce is 200ms)
+        std::thread::sleep(Duration::from_millis(500));
+        
+        // Should only get ONE message (the last one)
+        let msg = lsp_rx.recv_timeout(Duration::from_millis(100)).expect("Should have received a message");
+        if let Message::Notification(not) = msg {
+            assert_eq!(not.method, PublishDiagnostics::METHOD);
+            let params: PublishDiagnosticsParams = serde_json::from_value(not.params).unwrap();
+            assert_eq!(params.diagnostics.len(), 1);
+            assert_eq!(params.diagnostics[0].message, "error 3");
+            assert_eq!(params.version, Some(3));
+        } else {
+            panic!("Expected notification");
+        }
+
+        // Should NOT have any more messages
+        assert!(lsp_rx.try_recv().is_err(), "Should have only received one debounced message");
     }
 
     #[test]
@@ -470,7 +596,7 @@ mod tests {
 fn on_eval_cell(
     evaluator: &mut Evaluator,
     state: &Arc<RwLock<SharedState>>,
-    sender: &crossbeam_channel::Sender<Message>,
+    sender: &impl MessageSender,
     cancel_rx: &crossbeam_channel::Receiver<u32>,
     uri_str: &str,
     notebook_uri: Option<String>,
@@ -501,8 +627,7 @@ fn on_eval_cell(
                         "data": data
                     }
                 });
-                let not = lsp_server::Notification::new("scheme/notebook/outputStream".to_string(), params);
-                let _ = sender.send(Message::Notification(not));
+                sender.send_notification("scheme/notebook/outputStream".to_string(), params);
             } else if output_type == Some("rich") {
                 let mime = json_val.get("mime").and_then(|v| v.as_str()).unwrap_or("image/png");
                 let data = json_val.get("data").and_then(|v| v.as_str()).unwrap_or("");
@@ -514,8 +639,7 @@ fn on_eval_cell(
                         "data": data
                     }
                 });
-                let not = lsp_server::Notification::new("scheme/notebook/outputStream".to_string(), params);
-                let _ = sender.send(Message::Notification(not));
+                sender.send_notification("scheme/notebook/outputStream".to_string(), params);
             } else if let Some(res_str) = json_val.get("result").and_then(|v| v.as_str()) {
                 // It's a standard result or evaluation error reported via display-result
                 let is_error = json_val.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -528,8 +652,7 @@ fn on_eval_cell(
                         "data": res_str
                     }
                 });
-                let not = lsp_server::Notification::new("scheme/notebook/outputStream".to_string(), params);
-                let _ = sender.send(Message::Notification(not));
+                sender.send_notification("scheme/notebook/outputStream".to_string(), params);
 
                 if is_error {
                     let line = json_val.get("line").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
@@ -592,8 +715,7 @@ fn on_eval_cell(
                     "data": format!("Evaluation failed: {}", e)
                 }
             });
-            let err_not = lsp_server::Notification::new("scheme/notebook/outputStream".to_string(), err_params);
-            let _ = sender.send(Message::Notification(err_not));
+            sender.send_notification("scheme/notebook/outputStream".to_string(), err_params);
             
             serde_json::json!({
                 "executionId": execution_id,
@@ -602,6 +724,6 @@ fn on_eval_cell(
         }
     };
 
-    let not = lsp_server::Notification::new("scheme/notebook/evalFinished".to_string(), eval_finished_params);
-    let _ = sender.send(Message::Notification(not));
+    sender.send_notification("scheme/notebook/evalFinished".to_string(), eval_finished_params);
 }
+

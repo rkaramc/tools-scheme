@@ -7,7 +7,7 @@ use std::error::Error;
 use std::sync::{Arc, RwLock};
 
 use scheme_toolbox_lsp::server::{Server, SharedState};
-use scheme_toolbox_lsp::worker::{eval_worker, analysis_worker};
+use scheme_toolbox_lsp::worker::{eval_worker, analysis_worker, diagnostic_worker, DiagnosticWorkerSender};
 use scheme_toolbox_lsp::documents::DocumentStore;
 use scheme_toolbox_lsp::evaluator::Evaluator;
 
@@ -67,17 +67,30 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let (eval_tx, eval_rx) = crossbeam_channel::bounded(10);
     let (analysis_tx, analysis_rx) = crossbeam_channel::bounded(10);
     let (cancel_tx, cancel_rx) = crossbeam_channel::unbounded::<u32>();
+    
+    // Diagnostic worker for debouncing
+    let (diag_tx, diag_rx) = crossbeam_channel::unbounded();
+    let diag_lsp_sender = connection.sender.clone();
+    let diag_worker_handle = std::thread::spawn(move || {
+        diagnostic_worker(diag_rx, diag_lsp_sender);
+    });
 
     // Spawn the eval worker. It owns the Evaluator (and thus the Racket REPL
     // child process) and is the only thread that ever calls into it.
     let worker_state = Arc::clone(&state);
-    let worker_sender = connection.sender.clone();
+    let worker_sender = DiagnosticWorkerSender {
+        lsp_sender: connection.sender.clone(),
+        diagnostic_tx: diag_tx.clone(),
+    };
     let worker_handle = std::thread::spawn(move || {
         eval_worker(evaluator, eval_rx, cancel_rx, worker_state, worker_sender);
     });
 
     let analysis_worker_state = Arc::clone(&state);
-    let analysis_worker_sender = connection.sender.clone();
+    let analysis_worker_sender = DiagnosticWorkerSender {
+        lsp_sender: connection.sender.clone(),
+        diagnostic_tx: diag_tx,
+    };
     let analysis_worker_handle = std::thread::spawn(move || {
         analysis_worker(analysis_evaluator, analysis_rx, analysis_worker_state, analysis_worker_sender);
     });
@@ -97,9 +110,11 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     eprintln!("LSP Main: joining worker threads");
     worker_handle.join().map_err(|_| "Worker thread panicked")?;
     analysis_worker_handle.join().map_err(|_| "Analysis Worker thread panicked")?;
+    diag_worker_handle.join().map_err(|_| "Diagnostic Worker thread panicked")?;
 
     // Explicitly drop connection to close the writer channel, allowing IO threads to exit.
     drop(connection);
+
 
     eprintln!("LSP Main: joining IO threads");
     io_threads.join()?;
