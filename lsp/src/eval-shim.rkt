@@ -11,6 +11,10 @@
 (define cache-access-log (make-hash))
 (define document-evaluators (make-hash))
 
+(define current-eval-thread #f)
+(define current-parse-thread #f)
+(define current-evaluator #f)
+
 (define (snip->base64-png s)
   (define-values (w h)
     (let ([wb (box 0)]
@@ -469,9 +473,6 @@
                        (when (not (void? result))
                          (display-result (make-range start-line start-col end-line end-col span pos) result))))))
 
-(define current-eval-thread #f)
-(define current-evaluator #f)
-
 (define (validate-blocks blocks)
   (for ([block (in-list blocks)]
         [i (in-naturals)])
@@ -514,9 +515,16 @@
                (when current-evaluator
                  (break-evaluator current-evaluator))]
               [(string=? type "parse")
-               (parse-string-content (hash-ref json-input 'content) uri)
-               (displayln "READY" (current-repl-output-port))
-               (flush-output (current-repl-output-port))]
+               (set! current-parse-thread
+                     (thread
+                      (lambda ()
+                        (with-handlers ([exn:fail? (lambda (e)
+                                                     (display-result (make-range 1 0 1 0 0 1) e #:is-error #t)
+                                                     (displayln "READY" (current-repl-output-port))
+                                                     (flush-output (current-repl-output-port)))])
+                          (parse-string-content (hash-ref json-input 'content) uri)
+                          (displayln "READY" (current-repl-output-port))
+                          (flush-output (current-repl-output-port))))))]
               [(string=? type "validate-blocks")
                (validate-blocks (hash-ref json-input 'blocks))
                (displayln "READY" (current-repl-output-port))
@@ -659,6 +667,7 @@
       (parameterize ([current-repl-output-port out-port]
                      [current-input-port in-port])
         (run-repl))
+      (when current-parse-thread (thread-wait current-parse-thread))
       (let ([output (get-output-string out-port)])
         (check-regexp-match #px"\"line\":1" output)
         (check-regexp-match #px"\"span\":20" output)
@@ -673,6 +682,7 @@
       (parameterize ([current-repl-output-port out-port]
                      [current-input-port in-port])
         (run-repl))
+      (when current-parse-thread (thread-wait current-parse-thread))
       (let ([output (get-output-string out-port)])
         ;; Block 1: Code
         (check-regexp-match #px"\"line\":1" output)
