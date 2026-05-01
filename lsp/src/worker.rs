@@ -10,6 +10,7 @@ use lsp_types::{
 use crate::server::{SharedState, RwLockExt};
 use crate::evaluator::{EvalResult, Evaluator};
 use crate::coordinates::LineIndex;
+use crate::documents::DocumentSnapshot;
 
 static NEXT_REQ_ID: AtomicI32 = AtomicI32::new(100);
 
@@ -122,16 +123,18 @@ impl MessageSender for crossbeam_channel::Sender<Message> {
 
 pub enum EvalAction {
     Evaluate { 
+        snapshot: Option<DocumentSnapshot>,
         content: String, 
         request_id: RequestId, 
         version: Option<i32>, 
         offset: Option<(u32, u32)>, 
         byte_range: Option<(u32, u32)> 
     },
-    Parse { version: i32 },
+    Parse { snapshot: Option<DocumentSnapshot>, version: i32 },
     Clear,
     Restart,
     EvalCell { 
+        snapshot: Option<DocumentSnapshot>,
         code: String, 
         execution_id: u32,
         notebook_uri: Option<String>,
@@ -153,8 +156,8 @@ pub fn eval_worker(
 ) {
     for task in rx {
         match task.action {
-            EvalAction::Evaluate { content, version, offset, byte_range, request_id } => {
-                on_evaluate(&mut evaluator, &state, &sender, &task.uri, content, version, offset, byte_range, request_id);
+            EvalAction::Evaluate { snapshot, content, version, offset, byte_range, request_id } => {
+                on_evaluate(&mut evaluator, &state, &sender, &task.uri, snapshot, content, version, offset, byte_range, request_id);
             }
             EvalAction::Clear => {
                 on_clear(&mut evaluator, &state, &sender, &task.uri);
@@ -162,8 +165,8 @@ pub fn eval_worker(
             EvalAction::Restart => {
                 on_restart(&mut evaluator, &state, &sender);
             }
-            EvalAction::EvalCell { code, execution_id, notebook_uri, version } => {
-                on_eval_cell(&mut evaluator, &state, &sender, &cancel_rx, &task.uri, notebook_uri, code, execution_id, version);
+            EvalAction::EvalCell { snapshot, code, execution_id, notebook_uri, version } => {
+                on_eval_cell(&mut evaluator, &state, &sender, &cancel_rx, &task.uri, snapshot, notebook_uri, code, execution_id, version);
             }
             EvalAction::Parse { .. } => {
                 evaluator.log("WARNING: EvalWorker received Parse action. This should be routed to AnalysisActor.");
@@ -182,9 +185,9 @@ pub fn analysis_worker(
 ) {
     for task in rx {
         match task.action {
-            EvalAction::Parse { version } => {
+            EvalAction::Parse { snapshot, version } => {
                 // eprintln!("AnalysisWorker: Received Parse task for {} version {}", task.uri, version);
-                on_parse(&mut evaluator, &state, &sender, &task.uri, version);
+                on_parse(&mut evaluator, &state, &sender, &task.uri, snapshot, version);
             }
             EvalAction::Restart => {
                 // We only need to restart the evaluator process. We shouldn't clear the state here
@@ -207,6 +210,7 @@ fn on_evaluate(
     state: &Arc<RwLock<SharedState>>,
     sender: &impl MessageSender,
     uri_str: &str,
+    snapshot: Option<DocumentSnapshot>,
     content: String,
     version: Option<i32>,
     offset: Option<(u32, u32)>,
@@ -268,11 +272,17 @@ fn on_evaluate(
                         evaluator.log(&format!("Post-flight check failed: doc version {} > task version {:?}", doc.version, version));
                         true
                     } else {
-                        // Normalize the new results using document context
-                        if is_selection {
-                            recalculate_from_byte_pos(&mut results, &doc.text, &doc.line_index);
+                        // Use snapshot for normalization if available, otherwise use current document text/index
+                        let (norm_text, norm_index) = if let Some(snap) = &snapshot {
+                            (&*snap.text, &*snap.line_index)
                         } else {
-                            normalize_results(&mut results, &doc.text, &doc.line_index);
+                            (&*doc.text, &*doc.line_index)
+                        };
+
+                        if is_selection {
+                            recalculate_from_byte_pos(&mut results, norm_text, norm_index);
+                        } else {
+                            normalize_results(&mut results, norm_text, norm_index);
                         }
 
                         merge_results(&mut doc.results, results, byte_range);
@@ -307,12 +317,20 @@ fn on_evaluate(
                     }
                 } else {
                     // Fallback for one-off evaluations (no document in store)
-                    let temp_idx = crate::coordinates::LineIndex::new(&content);
-                    if is_selection {
-                        recalculate_from_byte_pos(&mut results, &content, &temp_idx);
+                    if let Some(snap) = &snapshot {
+                        if is_selection {
+                            recalculate_from_byte_pos(&mut results, &snap.text, &snap.line_index);
+                        } else {
+                            normalize_results(&mut results, &snap.text, &snap.line_index);
+                        }
                     } else {
-                        normalize_results(&mut results, &content, &temp_idx);
-                    }
+                        let temp_idx = crate::coordinates::LineIndex::new(&content);
+                        if is_selection {
+                            recalculate_from_byte_pos(&mut results, &content, &temp_idx);
+                        } else {
+                            normalize_results(&mut results, &content, &temp_idx);
+                        }
+                    };
 
                     final_diagnostics = results
                         .iter()
@@ -368,13 +386,17 @@ fn on_parse(
     state: &Arc<RwLock<SharedState>>,
     sender: &impl MessageSender,
     uri_str: &str,
+    snapshot: Option<DocumentSnapshot>,
     version: i32,
 ) {
     evaluator.log(&format!("EvalAction::Parse(version: {:?}) for {}", version, uri_str));
-    let (content, current_version) = {
+    
+    let (content, current_version) = if let Some(snap) = &snapshot {
+        (Some(Arc::clone(&snap.text)), Some(snap.version))
+    } else {
         let lock = state.read_recovered();
         if let Some(doc) = lock.document_store.get(uri_str) {
-            (Some(doc.text.clone()), Some(doc.version))
+            (Some(Arc::clone(&doc.text)), Some(doc.version))
         } else {
             (None, None)
         }
@@ -705,6 +727,7 @@ fn on_eval_cell(
     sender: &impl MessageSender,
     cancel_rx: &crossbeam_channel::Receiver<u32>,
     uri_str: &str,
+    _snapshot: Option<DocumentSnapshot>,
     notebook_uri: Option<String>,
     code: String,
     execution_id: u32,
