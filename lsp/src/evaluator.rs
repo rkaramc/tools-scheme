@@ -46,14 +46,92 @@ pub struct RangeResult {
     pub valid: bool,
 }
 
+#[derive(Debug)]
 struct ProcessState {
     child: Child,
     stdin_tx: crossbeam_channel::Sender<String>,
     stdout_rx: Receiver<String>,
 }
 
+/// Manages process restart strategy with exponential backoff.
+struct BackoffSupervisor {
+    consecutive_failures: u32,
+    last_attempt: Option<std::time::Instant>,
+    min_delay: Duration,
+    max_delay: Duration,
+}
+
+impl BackoffSupervisor {
+    fn new(min_delay: Duration, max_delay: Duration) -> Self {
+        Self {
+            consecutive_failures: 0,
+            last_attempt: None,
+            min_delay,
+            max_delay,
+        }
+    }
+
+    /// Records a successful start, resetting failures.
+    fn record_success(&mut self) {
+        self.consecutive_failures = 0;
+        self.last_attempt = Some(std::time::Instant::now());
+    }
+
+    /// Records a failure.
+    fn record_failure(&mut self) {
+        self.consecutive_failures += 1;
+        self.last_attempt = Some(std::time::Instant::now());
+    }
+
+    /// Returns true if a restart attempt is allowed.
+    fn can_restart(&self) -> bool {
+        if self.consecutive_failures == 0 {
+            return true;
+        }
+
+        if let Some(last) = self.last_attempt {
+            let delay = self.current_delay();
+            last.elapsed() >= delay
+        } else {
+            true
+        }
+    }
+
+    /// Calculates current required delay based on failures.
+    fn current_delay(&self) -> Duration {
+        if self.consecutive_failures == 0 {
+            return Duration::from_secs(0);
+        }
+        
+        // exponential backoff: min * 2^(n-1)
+        let exponent = (self.consecutive_failures - 1).min(31);
+        let factor = 2u64.pow(exponent);
+        let delay = self.min_delay * factor as u32;
+        
+        delay.min(self.max_delay)
+    }
+
+    #[allow(unused)]
+    fn next_attempt_in(&self) -> Duration {
+        if self.can_restart() {
+            Duration::from_secs(0)
+        } else if let Some(last) = self.last_attempt {
+            let delay = self.current_delay();
+            let elapsed = last.elapsed();
+            if elapsed >= delay {
+                Duration::from_secs(0)
+            } else {
+                delay - elapsed
+            }
+        } else {
+            Duration::from_secs(0)
+        }
+    }
+}
+
 pub struct Evaluator {
     state: Option<ProcessState>,
+    supervisor: BackoffSupervisor,
     shim_file: tempfile::NamedTempFile,
     timeout: Duration,
     global_session: std::fs::File,
@@ -63,15 +141,18 @@ pub struct Evaluator {
 
 impl Evaluator {
     pub fn new(racket_path: Option<String>) -> Result<Self> {
-        let temp_dir = if std::env::var("TOOLS_SCHEME_TEST").is_ok() {
+        let is_test = cfg!(test) || std::env::var("TOOLS_SCHEME_TEST").is_ok();
+        
+        let temp_dir = if is_test {
             std::env::current_dir()?
         } else {
-            std::env::temp_dir().join(TEMP_SUBDIR)
+            let p = std::env::temp_dir().join(TEMP_SUBDIR);
+            std::fs::create_dir_all(&p)?;
+            p
         };
-        std::fs::create_dir_all(&temp_dir)?;
 
         // Use project-specific session name instead of random suffix, unless testing
-        let session_name = if std::env::var("TOOLS_SCHEME_TEST").is_ok() {
+        let session_name = if is_test {
             format!("test_{}.session", fastrand::u32(..))
         } else {
             "global.session".to_string()
@@ -109,6 +190,7 @@ impl Evaluator {
 
         Ok(Self {
             state: Some(state),
+            supervisor: BackoffSupervisor::new(Duration::from_secs(1), Duration::from_secs(60)),
             shim_file,
             timeout,
             global_session,
@@ -293,15 +375,30 @@ impl Evaluator {
         };
 
         if needs_restart {
-            // Drop old state explicitly (kills process via Drop if implemented, or we do it here)
+            if !self.supervisor.can_restart() {
+                let next = self.supervisor.next_attempt_in();
+                return Err(anyhow!("Racket process is dead and restart is throttled. Try again in {}s", next.as_secs()));
+            }
+
+            // Drop old state explicitly
             if let Some(mut old_state) = self.state.take() {
                 let _ = old_state.child.kill();
                 let _ = old_state.child.wait();
             }
-            self.state = Some(Self::spawn_process(&self.racket_path, self.shim_file.path(), &self.global_session)?);
+
+            match Self::spawn_process(&self.racket_path, self.shim_file.path(), &self.global_session) {
+                Ok(new_state) => {
+                    self.supervisor.record_success();
+                    self.state = Some(new_state);
+                }
+                Err(e) => {
+                    self.supervisor.record_failure();
+                    return Err(anyhow!("Failed to restart Racket process: {}", e));
+                }
+            }
         }
         
-        Ok(self.state.as_mut().unwrap())
+        Ok(self.state.as_mut().ok_or_else(|| anyhow!("Racket process unavailable (throttled)"))?)
     }
 
     fn send_command<F>(
@@ -882,6 +979,78 @@ mod tests {
             "Expected (square 12) = 144, got: {:?}",
             values
         );
+    }
+
+    #[test]
+    fn test_backoff_supervisor_success_resets() {
+        let mut supervisor = BackoffSupervisor::new(Duration::from_millis(100), Duration::from_secs(1));
+        supervisor.record_failure();
+        assert_eq!(supervisor.consecutive_failures, 1);
+        supervisor.record_success();
+        assert_eq!(supervisor.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn test_backoff_supervisor_exponential_delay() {
+        let min = Duration::from_millis(100);
+        let max = Duration::from_secs(1);
+        let mut supervisor = BackoffSupervisor::new(min, max);
+        
+        supervisor.record_failure(); // 1st failure: delay = min * 2^0 = 100ms
+        assert_eq!(supervisor.current_delay(), min);
+        
+        supervisor.record_failure(); // 2nd failure: delay = min * 2^1 = 200ms
+        assert_eq!(supervisor.current_delay(), min * 2);
+        
+        supervisor.record_failure(); // 3rd failure: delay = min * 2^2 = 400ms
+        assert_eq!(supervisor.current_delay(), min * 4);
+        
+        for _ in 0..10 { supervisor.record_failure(); }
+        assert_eq!(supervisor.current_delay(), max); // capped at max
+    }
+
+    #[test]
+    fn test_backoff_supervisor_throttling() {
+        let mut supervisor = BackoffSupervisor::new(Duration::from_millis(100), Duration::from_secs(1));
+        
+        assert!(supervisor.can_restart(), "Initial attempt should be allowed");
+        
+        supervisor.record_failure();
+        assert!(!supervisor.can_restart(), "Immediate retry should be throttled");
+        
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(supervisor.can_restart(), "Retry after delay should be allowed");
+    }
+
+    #[test]
+    fn test_evaluator_backoff_on_spawn_failure() {
+        // Use an invalid binary that doesn't exist to cause spawn failure
+        // We'll have to skip the validation to get past new()
+        // Wait, Evaluator::new() calls validate_racket_path and spawn_process.
+        // If they fail, new() fails.
+        
+        // To test backoff, we need an Evaluator that is ALREADY created but then
+        // its process dies and it fails to restart.
+        let mut evaluator = Evaluator::new(None).unwrap();
+        
+        // Break the racket path so subsequent restarts fail
+        evaluator.racket_path = "non-existent-racket-binary-XYZ".to_string();
+        
+        // Kill the current process
+        if let Some(mut state) = evaluator.state.take() {
+            let _ = state.child.kill();
+            let _ = state.child.wait();
+        }
+        
+        // First attempt to ensure_alive should fail and record a failure
+        let res1 = evaluator.ensure_alive();
+        assert!(res1.is_err(), "First restart attempt should fail");
+        assert!(res1.as_ref().unwrap_err().to_string().contains("Failed to restart Racket process"));
+        
+        // Second attempt should be throttled immediately
+        let res2 = evaluator.ensure_alive();
+        assert!(res2.is_err(), "Second restart attempt should be throttled");
+        assert!(res2.as_ref().unwrap_err().to_string().contains("restart is throttled"), "Error was: {:?}", res2);
     }
 
     #[test]
