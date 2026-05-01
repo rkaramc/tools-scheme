@@ -139,7 +139,7 @@ describe("utils", () => {
                 context.extensionMode = vscode.ExtensionMode.Development;
                 const testTempDir = path.join(os.tmpdir(), "test-lsp-bin");
                 jest.spyOn(utils, 'getTempDir').mockReturnValue(testTempDir);
-                (fs.copyFileSync as jest.Mock).mockImplementation(() => {});
+                (fs.copyFileSync as jest.Mock).mockImplementation(() => { /* no-op */ });
 
                 const result = getRuntimeBinaryPath(context, "C:\\bin\\lsp.exe", mockOutputChannel);
                 
@@ -152,7 +152,7 @@ describe("utils", () => {
                 context.extensionMode = vscode.ExtensionMode.Development;
                 const oldTemp = "C:\\tmp\\old.exe";
                 (fs.existsSync as jest.Mock).mockImplementation(p => p === oldTemp);
-                (fs.unlinkSync as jest.Mock).mockImplementation(() => {});
+                (fs.unlinkSync as jest.Mock).mockImplementation(() => { /* no-op */ });
 
                 getRuntimeBinaryPath(context, "C:\\bin\\lsp.exe", mockOutputChannel, oldTemp);
                 

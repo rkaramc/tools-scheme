@@ -148,7 +148,7 @@ export class SchemeNotebookController {
         } else if (payload.type === 'rich') {
             try {
                 // Determine correct mime type
-                let mime = payload.mime || 'image/png';
+                const mime = payload.mime || 'image/png';
                 if (mime === 'image/png') {
                     const buf = Buffer.from(payload.data, 'base64');
                     outputItem = new vscode.NotebookCellOutputItem(buf, mime);
