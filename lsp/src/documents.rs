@@ -6,15 +6,35 @@ use std::io::Write;
 use std::fs::{File, OpenOptions};
 use crate::evaluator::EvalResult;
 use lsp_types::Range;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct Document {
     pub version: i32,
-    pub text: String,
-    pub line_index: LineIndex,
+    pub text: Arc<String>,
+    pub line_index: Arc<LineIndex>,
     pub session_file: Option<File>,
     pub results: Vec<EvalResult>,
     pub ranges: Vec<Range>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DocumentSnapshot {
+    pub uri: String,
+    pub version: i32,
+    pub text: Arc<String>,
+    pub line_index: Arc<LineIndex>,
+}
+
+impl Document {
+    pub fn snapshot(&self, uri: String) -> DocumentSnapshot {
+        DocumentSnapshot {
+            uri,
+            version: self.version,
+            text: Arc::clone(&self.text),
+            line_index: Arc::clone(&self.line_index),
+        }
+    }
 }
 
 pub struct DocumentStore {
@@ -55,8 +75,8 @@ impl DocumentStore {
             item.uri.to_string(),
             Document {
                 version: item.version,
-                text: item.text,
-                line_index,
+                text: Arc::new(item.text),
+                line_index: Arc::new(line_index),
                 session_file,
                 results: Vec::new(),
                 ranges: Vec::new(),
@@ -68,7 +88,7 @@ impl DocumentStore {
         if let Some(doc) = self.documents.get_mut(uri) {
             // Simple heuristic for shifting: if a single newline was prepended, shift results by 1 byte.
             // This satisfies the document lifecycle integration test.
-            if text.len() == doc.text.len() + 1 && text.ends_with(&doc.text) && text.starts_with('\n') {
+            if text.len() == doc.text.len() + 1 && text.ends_with(&*doc.text) && text.starts_with('\n') {
                 for res in &mut doc.results {
                     res.pos += 1;
                 }
@@ -77,8 +97,8 @@ impl DocumentStore {
             }
 
             doc.version = version;
-            doc.text = text;
-            doc.line_index = line_index;
+            doc.text = Arc::new(text);
+            doc.line_index = Arc::new(line_index);
         }
     }
 
@@ -135,7 +155,7 @@ mod tests {
         {
             let doc = store.get(uri).expect("Document should be in store");
             assert_eq!(doc.version, 1);
-            assert_eq!(doc.text, "(define x 1)");
+            assert_eq!(*doc.text, "(define x 1)");
         }
 
         let new_text = "(define x 2)".to_string();
@@ -145,7 +165,7 @@ mod tests {
         {
             let doc = store.get(uri).expect("Document should still be in store");
             assert_eq!(doc.version, 2);
-            assert_eq!(doc.text, new_text);
+            assert_eq!(*doc.text, new_text);
         }
 
         store.close(uri);

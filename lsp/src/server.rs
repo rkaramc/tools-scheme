@@ -139,12 +139,16 @@ impl Server {
             .on_sync_mut::<DidOpenTextDocument>(|params| {
                 let uri = params.text_document.uri.to_string();
                 let version = params.text_document.version;
-                self.write_state().document_store.open(params.text_document);
+                let snapshot = {
+                    let mut lock = self.write_state();
+                    lock.document_store.open(params.text_document);
+                    lock.document_store.get(&uri).map(|d| d.snapshot(uri.clone()))
+                };
                 
                 // Trigger background parse immediately on open to populate ranges for CodeLens
                 if let Err(e) = self.analysis_tx.send(EvalTask {
                     uri,
-                    action: EvalAction::Parse { version },
+                    action: EvalAction::Parse { snapshot, version },
                 }) {
                     eprintln!("analysis_tx channel full, dropping initial parse task: {}", e);
                 }
@@ -153,17 +157,20 @@ impl Server {
             .on_sync_mut::<DidChangeTextDocument>(|params| {
                 let uri = params.text_document.uri.to_string();
                 let version = params.text_document.version;
-                if let Some(change) = params.content_changes.into_iter().last() {
+                let snapshot = if let Some(change) = params.content_changes.into_iter().last() {
                     let mut lock = self.write_state();
                     let new_text = change.text;
                     let new_idx = crate::coordinates::LineIndex::new(&new_text);
                     lock.document_store.update_text_and_index(&uri, version, new_text, new_idx);
-                }
+                    lock.document_store.get(&uri).map(|d| d.snapshot(uri.clone()))
+                } else {
+                    self.read_state().document_store.get(&uri).map(|d| d.snapshot(uri.clone()))
+                };
                 
                 // Submit background parse task
                 if let Err(e) = self.analysis_tx.send(EvalTask {
                     uri,
-                    action: EvalAction::Parse { version },
+                    action: EvalAction::Parse { snapshot, version },
                 }) {
                     eprintln!("analysis_tx channel full, dropping parse task: {}", e);
                 }
@@ -174,9 +181,11 @@ impl Server {
                 Ok(())
             })?
             .on_sync_mut::<EvalCellNotification>(|params| {
+                let snapshot = self.read_state().document_store.get(&params.uri).map(|d| d.snapshot(params.uri.clone()));
                 if let Err(e) = self.eval_tx.send(EvalTask {
                     uri: params.uri,
                     action: EvalAction::EvalCell { 
+                        snapshot,
                         code: params.code, 
                         execution_id: params.execution_id,
                         notebook_uri: params.notebook_uri,
@@ -247,10 +256,10 @@ impl Server {
         
         match cmd {
             Ok(SchemeCommand::Evaluate((uri,))) => {
-                let (content, version) = {
+                let (snapshot, content, version) = {
                     let lock = self.read_state();
                     if let Some(doc) = lock.document_store.get(&uri) {
-                        (doc.text.clone(), Some(doc.version))
+                        (Some(doc.snapshot(uri.clone())), (*doc.text).clone(), Some(doc.version))
                     } else {
                         return Ok(());
                     }
@@ -259,6 +268,7 @@ impl Server {
                 if let Err(e) = self.eval_tx.send(EvalTask {
                     uri,
                     action: EvalAction::Evaluate {
+                        snapshot,
                         content,
                         request_id: id.clone(),
                         version,
@@ -270,20 +280,21 @@ impl Server {
                 }
             }
             Ok(SchemeCommand::EvaluateSelection((uri, text, range))) => {
-                let (version, byte_range) = {
+                let (snapshot, version, byte_range) = {
                     let lock = self.read_state();
                     if let Some(doc) = lock.document_store.get(&uri) {
                         let start_byte = lock.document_store.position_to_byte(&uri, range.start);
                         let end_byte = lock.document_store.position_to_byte(&uri, range.end);
-                        (Some(doc.version), Some((start_byte, end_byte)))
+                        (Some(doc.snapshot(uri.clone())), Some(doc.version), Some((start_byte, end_byte)))
                     } else {
-                        (None, None)
+                        (None, None, None)
                     }
                 };
 
                 if let Err(e) = self.eval_tx.send(EvalTask {
                     uri,
                     action: EvalAction::Evaluate {
+                        snapshot,
                         content: text,
                         request_id: id.clone(),
                         version,
