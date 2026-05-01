@@ -43,8 +43,8 @@ Cargo.lock
 skills-lock.json
 
 # Project Logs
-global.session
-
+*.session
+eval-shim-*.rkt
 
 # bv (beads viewer) local config and caches
 .bv/

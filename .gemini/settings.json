@@ -1,11 +1,12 @@
 {
   "experimental": {
     "gemmaModelRouter": {
-      "enabled": true,
+      "enabled": false,
       "classifier": {
         "host": "http://localhost:9379",
         "model": "gemma3-1b-gpu-custom"
       }
-    }
+    },
+    "gemma": false
   }
 }
