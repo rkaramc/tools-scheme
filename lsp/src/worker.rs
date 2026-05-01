@@ -61,20 +61,25 @@ pub fn diagnostic_worker(
     let mut pending: std::collections::HashMap<lsp_types::Uri, DiagnosticTask> = std::collections::HashMap::new();
     let is_test = std::env::var("TOOLS_SCHEME_TEST").is_ok();
     let debounce_ms = if is_test { 0 } else { 200 };
+    let max_debounce_ms = 1000; // Hard cap of 1 second for any burst
 
     loop {
         match rx.recv() {
             Ok(task) => {
+                let burst_start = std::time::Instant::now();
                 pending.insert(task.uri.clone(), task);
                 
-                // Keep collecting as long as they come in fast
+                // Keep collecting as long as they come in fast, but don't wait forever
                 if debounce_ms > 0 {
                     while let Ok(task) = rx.recv_timeout(std::time::Duration::from_millis(debounce_ms)) {
                         pending.insert(task.uri.clone(), task);
+                        if burst_start.elapsed().as_millis() >= max_debounce_ms as u128 {
+                            break;
+                        }
                     }
                 }
                 
-                // Silence reached or immediate mode (debounce_ms == 0), flush all
+                // Silence reached, max delay hit, or immediate mode (debounce_ms == 0), flush all
                 for (_, task) in pending.drain() {
                     let diag_params = PublishDiagnosticsParams { 
                         uri: task.uri, 
@@ -254,43 +259,8 @@ fn on_evaluate(
                 }
             }
 
-            // Normalize coordinates to UTF-16 immediately using syntax-position and span.
-            if let Some(doc) = state.read_recovered().document_store.get(uri_str) {
-                if is_selection {
-                    recalculate_from_byte_pos(&mut results, &doc.text, &doc.line_index);
-                } else {
-                    normalize_results(&mut results, &doc.text, &doc.line_index);
-                }
-            }
-
-            // Build diagnostics while we still have the results in hand
-            let diagnostics: Vec<Diagnostic> = results
-                .iter()
-                .filter(|r| r.is_error)
-                .map(|res| {
-                    let range = Range::new(
-                        Position::new(res.line.saturating_sub(1), res.col),
-                        Position::new(res.end_line.saturating_sub(1), res.end_col),
-                    );
-                    
-                    let mut severity = DiagnosticSeverity::ERROR;
-                    if uri_str.starts_with("vscode-notebook-cell:") {
-                        let msg_lower = res.result.to_lowercase();
-                        if msg_lower.contains("duplicate identifier") || msg_lower.contains("duplicate binding") {
-                            severity = DiagnosticSeverity::WARNING;
-                        }
-                    }
-
-                    Diagnostic {
-                        range,
-                        severity: Some(severity),
-                        message: res.result.clone(),
-                        ..Default::default()
-                    }
-                })
-                .collect();
-
-            // Store results with spatial merging.
+            // Normalize coordinates and build diagnostics.
+            let mut final_diagnostics = Vec::new();
             let is_stale = {
                 let mut lock = state.write_recovered();
                 if let Some(doc) = lock.document_store.get_mut(uri_str) {
@@ -298,18 +268,85 @@ fn on_evaluate(
                         evaluator.log(&format!("Post-flight check failed: doc version {} > task version {:?}", doc.version, version));
                         true
                     } else {
+                        // Normalize the new results using document context
+                        if is_selection {
+                            recalculate_from_byte_pos(&mut results, &doc.text, &doc.line_index);
+                        } else {
+                            normalize_results(&mut results, &doc.text, &doc.line_index);
+                        }
+
                         merge_results(&mut doc.results, results, byte_range);
+                        
+                        // Build diagnostics from the COMPOSITE results after merge
+                        final_diagnostics = doc.results
+                            .iter()
+                            .filter(|r| r.is_error)
+                            .map(|res| {
+                                let range = Range::new(
+                                    Position::new(res.line.saturating_sub(1), res.col),
+                                    Position::new(res.end_line.saturating_sub(1), res.end_col),
+                                );
+                                
+                                let mut severity = DiagnosticSeverity::ERROR;
+                                if uri_str.starts_with("vscode-notebook-cell:") {
+                                    let msg_lower = res.result.to_lowercase();
+                                    if msg_lower.contains("duplicate identifier") || msg_lower.contains("duplicate binding") {
+                                        severity = DiagnosticSeverity::WARNING;
+                                    }
+                                }
+
+                                Diagnostic {
+                                    range,
+                                    severity: Some(severity),
+                                    message: res.result.clone(),
+                                    ..Default::default()
+                                }
+                            })
+                            .collect();
                         false
                     }
                 } else {
+                    // Fallback for one-off evaluations (no document in store)
+                    let temp_idx = crate::coordinates::LineIndex::new(&content);
+                    if is_selection {
+                        recalculate_from_byte_pos(&mut results, &content, &temp_idx);
+                    } else {
+                        normalize_results(&mut results, &content, &temp_idx);
+                    }
+
+                    final_diagnostics = results
+                        .iter()
+                        .filter(|r| r.is_error)
+                        .map(|res| {
+                            let range = Range::new(
+                                Position::new(res.line.saturating_sub(1), res.col),
+                                Position::new(res.end_line.saturating_sub(1), res.end_col),
+                            );
+
+                            let mut severity = DiagnosticSeverity::ERROR;
+                            if uri_str.starts_with("vscode-notebook-cell:") {
+                                let msg_lower = res.result.to_lowercase();
+                                if msg_lower.contains("duplicate identifier") || msg_lower.contains("duplicate binding") {
+                                    severity = DiagnosticSeverity::WARNING;
+                                }
+                            }
+
+                            Diagnostic {
+                                range,
+                                severity: Some(severity),
+                                message: res.result.clone(),
+                                ..Default::default()
+                            }
+                        })
+                        .collect();
                     false
                 }
             };
 
             if is_stale { return; }
 
-            // Publish diagnostics.
-            sender.send_diagnostics(uri, diagnostics, version);
+            // Publish composite diagnostics.
+            sender.send_diagnostics(uri, final_diagnostics, version);
 
             // Ask the client to refresh inlay hints.
             sender.refresh_inlay_hints();
@@ -553,6 +590,75 @@ mod tests {
 
         // Should NOT have any more messages
         assert!(lsp_rx.try_recv().is_err(), "Should have only received one debounced message");
+    }
+
+    #[test]
+    fn test_diagnostic_worker_infinite_debounce_risk() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let (lsp_tx, lsp_rx) = crossbeam_channel::unbounded();
+        
+        let _handle = std::thread::spawn(move || {
+            diagnostic_worker(rx, lsp_tx);
+        });
+
+        let uri = lsp_types::Uri::from_str("file:///test.rkt").unwrap();
+        
+        // Send 10 tasks with 100ms interval. Debounce is 200ms.
+        // If it's buggy, it will never flush during the 1 second.
+        for i in 1..=10 {
+            tx.send(DiagnosticTask {
+                uri: uri.clone(),
+                diagnostics: vec![Diagnostic { message: format!("error {}", i), ..Default::default() }],
+                version: Some(i)
+            }).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            
+            // It should NOT have flushed yet because the burst is ongoing
+            assert!(lsp_rx.try_recv().is_err(), "Flushed prematurely during burst at task {}", i);
+        }
+
+        // Wait another 500ms to be sure it flushes after the burst.
+        std::thread::sleep(Duration::from_millis(500));
+        
+        let mut count = 0;
+        while let Ok(_) = lsp_rx.try_recv() {
+            count += 1;
+        }
+        assert_eq!(count, 1, "Should have received exactly one debounced message after burst");
+    }
+
+    #[test]
+    fn test_diagnostic_worker_max_debounce() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let (lsp_tx, lsp_rx) = crossbeam_channel::unbounded();
+        
+        let _handle = std::thread::spawn(move || {
+            diagnostic_worker(rx, lsp_tx);
+        });
+
+        let uri = lsp_types::Uri::from_str("file:///test.rkt").unwrap();
+        
+        // Send tasks with 100ms interval for 2 seconds.
+        // max_debounce_ms is 1000ms.
+        // We expect at least one flush around 1 second.
+        let start = std::time::Instant::now();
+        let mut flushed_at_least_once = false;
+        for i in 1..=20 {
+            tx.send(DiagnosticTask {
+                uri: uri.clone(),
+                diagnostics: vec![Diagnostic { message: format!("error {}", i), ..Default::default() }],
+                version: Some(i)
+            }).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            
+            if lsp_rx.try_recv().is_ok() {
+                flushed_at_least_once = true;
+                let elapsed = start.elapsed().as_millis();
+                assert!(elapsed >= 800 && elapsed <= 1500, "Flush happened too early or too late: {}ms", elapsed);
+            }
+        }
+
+        assert!(flushed_at_least_once, "Should have flushed during the long burst due to max_debounce_ms");
     }
 
     #[test]

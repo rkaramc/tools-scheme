@@ -137,6 +137,7 @@ pub struct Evaluator {
     global_session: std::fs::File,
     _global_session_path: PathBuf,
     racket_path: String,
+    pending_cancellations: std::collections::HashSet<u32>,
 }
 
 impl Evaluator {
@@ -196,6 +197,7 @@ impl Evaluator {
             global_session,
             _global_session_path:global_session_path,
             racket_path: final_racket_path,
+            pending_cancellations: std::collections::HashSet::new(),
         })
     }
 
@@ -406,32 +408,58 @@ impl Evaluator {
         req: &serde_json::Value, 
         cancel_info: Option<(&crossbeam_channel::Receiver<u32>, u32, &str)>,
         log_file: Option<&File>,
+        on_line: F
+    ) -> Result<()>
+    where
+        F: FnMut(&str),
+    {
+        // 1. Check if this task was already cancelled before we even started
+        if let Some((_, id, _)) = cancel_info {
+            if self.pending_cancellations.remove(&id) {
+                return Err(anyhow!("Task {} was cancelled before start", id));
+            }
+        }
+
+        // 2. Ensure REPL is alive and get channels
+        let (stdin_tx, stdout_rx) = {
+            let state = self.ensure_alive()?;
+            (state.stdin_tx.clone(), state.stdout_rx.clone())
+        };
+
+        let mut line = serde_json::to_string(req)?;
+        line.push('\n');
+
+        if stdin_tx.send(line.clone()).is_err() {
+            // Retry once if channel is broken (process might have died just now)
+            self.state.take();
+            let (new_stdin_tx, new_stdout_rx) = {
+                let state = self.ensure_alive()?;
+                (state.stdin_tx.clone(), state.stdout_rx.clone())
+            };
+            new_stdin_tx.send(line)?;
+            // Update our local channels to the new ones
+            // Wait, we need to keep using the new ones in the loop
+            return self.send_command_loop(new_stdin_tx, new_stdout_rx, cancel_info, log_file, on_line);
+        }
+
+        self.send_command_loop(stdin_tx, stdout_rx, cancel_info, log_file, on_line)
+    }
+
+    fn send_command_loop<F>(
+        &mut self,
+        stdin_tx: crossbeam_channel::Sender<String>,
+        stdout_rx: Receiver<String>,
+        cancel_info: Option<(&crossbeam_channel::Receiver<u32>, u32, &str)>,
+        log_file: Option<&File>,
         mut on_line: F
     ) -> Result<()>
     where
         F: FnMut(&str),
     {
-        let state = self.ensure_alive()?;
-
-        let mut line = serde_json::to_string(req)?;
-        line.push('\n');
-
-        let mut retry = false;
-        if state.stdin_tx.send(line.clone()).is_err() {
-            retry = true;
-        }
-
-        if retry {
-            self.state.take();
-            let new_state = self.ensure_alive()?;
-            new_state.stdin_tx.send(line)?;
-        }
-
         loop {
-            let state = self.state.as_mut().unwrap();
             let buffer = if let Some((rx, id, uri)) = cancel_info {
                 crossbeam_channel::select! {
-                    recv(state.stdout_rx) -> msg => match msg {
+                    recv(stdout_rx) -> msg => match msg {
                         Ok(l) => l,
                         Err(_) => {
                             self.state.take();
@@ -447,7 +475,10 @@ impl Evaluator {
                                 });
                                 let mut cancel_line = serde_json::to_string(&cancel_req).unwrap();
                                 cancel_line.push('\n');
-                                let _ = state.stdin_tx.send(cancel_line);
+                                let _ = stdin_tx.send(cancel_line);
+                            } else {
+                                // Store cancellation for a future task so it's not lost
+                                self.pending_cancellations.insert(cancel_id);
                             }
                         }
                         // Wait for the next message
@@ -462,7 +493,7 @@ impl Evaluator {
                     }
                 }
             } else {
-                match state.stdout_rx.recv_timeout(self.timeout) {
+                match stdout_rx.recv_timeout(self.timeout) {
                     Ok(l) => l,
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                         if let Some(mut state) = self.state.take() {
