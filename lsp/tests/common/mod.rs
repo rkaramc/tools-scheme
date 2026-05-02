@@ -81,6 +81,7 @@ impl LspProcess {
         }
     }
 
+    #[allow(dead_code)]
     pub fn close_stdin(&mut self) {
         self.stdin.take();
     }

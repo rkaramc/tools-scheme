@@ -73,7 +73,18 @@ language-servers = [ "scheme-toolbox-lsp" ]
 | **Pros**         | Immediate visual feedback on code behavior; great for "The Little Schemer" style learning. | Deep understanding of Racket macro expansion and bindings. |
 | **Cons**         | Syntax errors may overlap with racket-langserver.                                          | Heavy resource usage; no live evaluation hints.            |
 
-**Recommendation**: Use both! Helix will merge the inlay hints and diagnostics, giving you the best of both worlds: live execution feedback from `scheme-toolbox-lsp` and deep static analysis from `racket-langserver`. (Note: You may see duplicate syntax errors until issue `ts-5v5` is implemented).
+**Recommendation**: Use both! Helix will merge the inlay hints and diagnostics, giving you the best of both worlds: live execution feedback from `scheme-toolbox-lsp` and deep static analysis from `racket-langserver`.
+
+### Suppressing Redundant Diagnostics
+
+When running both servers, you may wish to disable diagnostic publishing in `scheme-toolbox-lsp` to avoid duplicate error markers for syntax issues. You can do this via `initialization_options` in your `languages.toml`:
+
+```toml
+[language-server.scheme-toolbox-lsp]
+command = "scheme-toolbox-lsp"
+[language-server.scheme-toolbox-lsp.config]
+disableDiagnostics = true
+```
 
 ### Automation
 

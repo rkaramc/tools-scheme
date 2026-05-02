@@ -105,7 +105,7 @@ suite("Extension Integration Test Suite", () => {
   test("CodeLens on .rkt Files Test", async function (this: any) {
     this.timeout(60000);
     const testFilePath = path.join(os.tmpdir(), `test_codelens_${Date.now()}.rkt`);
-    const content = '#lang racket\n(+ 1 2)\n\n(define (g x) (* x 2))\n(g 5)\n';
+    const content = '#lang racket\n(+ 1 2)\n\n(define (g x) (* x 2))\n\n(g 5)\n';
     fs.writeFileSync(testFilePath, content);
 
     try {

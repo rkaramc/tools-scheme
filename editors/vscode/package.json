@@ -185,6 +185,11 @@
                     },
                     "default": {},
                     "description": "Custom file extensions to associate with Racket or Scheme. Example: { \".rktl\": \"racket\", \".sls\": \"scheme\" }"
+                },
+                "scheme.disableDiagnostics": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "If enabled, the LSP will not publish diagnostics (syntax or evaluation errors). Useful when running alongside other Racket language servers to avoid redundant error markers."
                 }
             }
         },
