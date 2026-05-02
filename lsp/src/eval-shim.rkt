@@ -236,10 +236,13 @@
 (define (evaluate-file path)
   (define target-path
     (if (string=? path "-")
-        (let ([tmp (make-temporary-file "eval-shim-~a.rkt")])
-          (with-output-to-file tmp #:exists 'replace
-            (lambda () (copy-port (current-input-port) (current-output-port))))
-          tmp)
+        (let ([tmp-dir (getenv "TOOLS_SCHEME_TMP_DIR")])
+          (let ([tmp (if tmp-dir
+                         (make-temporary-file "eval-shim-~a.rkt" #f (string->path tmp-dir))
+                         (make-temporary-file "eval-shim-~a.rkt"))])
+            (with-output-to-file tmp #:exists 'replace
+              (lambda () (copy-port (current-input-port) (current-output-port))))
+            tmp))
         path))
 
   (define file-path (if (path? target-path) target-path (string->path target-path)))
@@ -438,8 +441,7 @@
                      (make-evaluator lang #:allow-read (list file-dir))
                      (make-evaluator lang))))))
 
-(define (evaluate-string-content content uri)
-  (define ev (get-evaluator (or uri "repl") content))
+(define (evaluate-string-content content uri ev)
   (define file-path (uri->path uri))
   (define source    (or file-path uri 'repl))
   (define cached (cache-content! content (or uri 'repl)))
@@ -496,21 +498,23 @@
                  [uri (hash-ref json-input 'uri #f)])
             (cond
               [(string=? type "evaluate")
-               (set! current-evaluator (get-evaluator (or uri "repl") (hash-ref json-input 'content)))
-               (set! current-eval-thread
-                     (thread
-                      (lambda ()
-                        (with-handlers ([exn:break? (lambda (e)
-                                                      (display-result (make-range 1 0 1 0 0 1) (make-exn:fail "Evaluation cancelled" (current-continuation-marks)) #:is-error #t)
-                                                      (displayln "READY" (current-repl-output-port))
-                                                      (flush-output (current-repl-output-port)))]
-                                        [exn:fail? (lambda (e)
-                                                     ;; Fallback just in case, but evaluate-string-content already catches most exn:fail?
-                                                     (displayln "READY" (current-repl-output-port))
-                                                     (flush-output (current-repl-output-port)))])
-                          (evaluate-string-content (hash-ref json-input 'content) uri)
-                          (displayln "READY" (current-repl-output-port))
-                          (flush-output (current-repl-output-port))))))]
+               (let ([ev (get-evaluator (or uri "repl") (hash-ref json-input 'content))])
+                 (set! current-evaluator ev)
+                 (set! current-eval-thread
+                       (thread
+                        (lambda ()
+                          (with-handlers ([exn:break? (lambda (e)
+                                                        (display-result (make-range 1 0 1 0 0 1) (make-exn:fail "Evaluation cancelled" (current-continuation-marks)) #:is-error #t)
+                                                        (displayln "READY" (current-repl-output-port))
+                                                        (flush-output (current-repl-output-port)))]
+                                          [exn:fail? (lambda (e)
+                                                       ;; Fallback just in case
+                                                       (display-result (make-range 1 0 1 0 0 1) e #:is-error #t)
+                                                       (displayln "READY" (current-repl-output-port))
+                                                       (flush-output (current-repl-output-port)))])
+                            (evaluate-string-content (hash-ref json-input 'content) uri ev)
+                            (displayln "READY" (current-repl-output-port))
+                            (flush-output (current-repl-output-port)))))))]
               [(string=? type "cancel-evaluation")
                (when current-evaluator
                  (break-evaluator current-evaluator))]
@@ -621,7 +625,10 @@
       (check-true (hash-has-key? file-content-cache "source4"))))
 
   (test-case "evaluate-file"
-    (let ([tmp (make-temporary-file "test-eval-file-~a.rkt")])
+    (let* ([tmp-dir (getenv "TOOLS_SCHEME_TMP_DIR")]
+           [tmp (if tmp-dir
+                    (make-temporary-file "test-eval-file-~a.rkt" #f (string->path tmp-dir))
+                    (make-temporary-file "test-eval-file-~a.rkt"))])
       (with-output-to-file tmp #:exists 'replace
         (lambda () (displayln "#lang racket\n(define x 10)\n(+ x 5)")))
       (let ([out-port (open-output-string)])
