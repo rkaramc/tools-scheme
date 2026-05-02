@@ -677,6 +677,26 @@ impl Evaluator {
         self.send_command(&req, None, log, |_| {})
     }
 
+    pub fn get_rich_media(&mut self, id: &str, log: Option<&File>) -> Result<String> {
+        let req = serde_json::json!({
+            "type": "get-rich-media",
+            "id": id
+        });
+
+        let mut data = String::new();
+        self.send_command(&req, None, log, |trimmed| {
+            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if json_val.get("type").and_then(|v| v.as_str()) == Some("rich-data") {
+                    if let Some(d) = json_val.get("data").and_then(|v| v.as_str()) {
+                        data = d.to_string();
+                    }
+                }
+            }
+        })?;
+
+        Ok(data)
+    }
+
     pub fn validate_blocks(
         &mut self,
         blocks: Vec<String>,

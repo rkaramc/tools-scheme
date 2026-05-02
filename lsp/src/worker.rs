@@ -138,6 +138,10 @@ pub enum EvalAction {
         notebook_uri: Option<String>,
         version: Option<i32>,
     },
+    PullRichMedia {
+        id: String,
+        request_id: RequestId,
+    },
 }
 
 pub struct EvalTask {
@@ -165,6 +169,9 @@ pub fn eval_worker(
             }
             EvalAction::EvalCell { snapshot, code, execution_id, notebook_uri, version } => {
                 on_eval_cell(&mut evaluator, &result_tx, &sender, &cancel_rx, &task.uri, snapshot, notebook_uri, code, execution_id, version);
+            }
+            EvalAction::PullRichMedia { id, request_id } => {
+                on_pull_rich_media(&mut evaluator, &result_tx, &task.uri, id, request_id);
             }
             EvalAction::Parse { .. } => {
                 evaluator.log("WARNING: EvalWorker received Parse action. This should be routed to AnalysisActor.");
@@ -335,6 +342,24 @@ fn on_restart(
     evaluator.log("EvalAction::Restart triggered");
     let _ = evaluator.restart();
     let _ = result_tx.send(WorkerResult::RestartComplete); // Gateway will clear all
+}
+
+fn on_pull_rich_media(
+    evaluator: &mut Evaluator,
+    result_tx: &crossbeam_channel::Sender<WorkerResult>,
+    _uri_str: &str,
+    id: String,
+    request_id: RequestId,
+) {
+    match evaluator.get_rich_media(&id, None) {
+        Ok(data) => {
+            let _ = result_tx.send(WorkerResult::RichMedia { id, data, request_id });
+        }
+        Err(e) => {
+            evaluator.log(&format!("Error pulling rich media {}: {}", id, e));
+            let _ = result_tx.send(WorkerResult::RichMedia { id, data: String::new(), request_id });
+        }
+    }
 }
 
 fn normalize_results(results: &mut [EvalResult], text: &str, line_index: &LineIndex) {
@@ -526,13 +551,13 @@ fn on_eval_cell(
                 sender.send_notification("scheme/notebook/outputStream".to_string(), params);
             } else if output_type == Some("rich") {
                 let mime = json_val.get("mime").and_then(|v| v.as_str()).unwrap_or("image/png");
-                let data = json_val.get("data").and_then(|v| v.as_str()).unwrap_or("");
+                let id = json_val.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let params = serde_json::json!({
                     "executionId": execution_id,
                     "payload": {
                         "type": "rich",
                         "mime": mime,
-                        "data": data
+                        "id": id
                     }
                 });
                 sender.send_notification("scheme/notebook/outputStream".to_string(), params);
