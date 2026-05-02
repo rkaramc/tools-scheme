@@ -36,6 +36,25 @@ describe("utils", () => {
         delete process.env.TOOLS_SCHEME_LSP_PATH;
     });
 
+    describe("getTempDir", () => {
+        it("should return the path from TOOLS_SCHEME_TMP_DIR if set", () => {
+            const customDir = "/custom/tmp/dir";
+            process.env.TOOLS_SCHEME_TMP_DIR = customDir;
+            (fs.existsSync as jest.Mock).mockReturnValue(true);
+            
+            expect(utils.getTempDir(false)).toBe(customDir);
+        });
+
+        it("should fallback to system temp dir if TOOLS_SCHEME_TMP_DIR is not set", () => {
+            delete process.env.TOOLS_SCHEME_TMP_DIR;
+            const systemTemp = os.tmpdir();
+            
+            const result = utils.getTempDir(false);
+            expect(result).toContain(systemTemp);
+            expect(result).toContain("vscode-scheme-toolbox-lsp");
+        });
+    });
+
     describe("cleanupStaleFiles", () => {
         let tempDir: string;
 

@@ -11,7 +11,8 @@ const TEMP_DIR_NAME = "vscode-scheme-toolbox-lsp";
  * @param create If true, creates the directory if it doesn't exist.
  */
 export function getTempDir(create = true): string {
-  const tempDir = path.join(os.tmpdir(), TEMP_DIR_NAME);
+  const envTempDir = process.env.TOOLS_SCHEME_TMP_DIR;
+  const tempDir = envTempDir || path.join(os.tmpdir(), TEMP_DIR_NAME);
   if (create) {
     ensureTempDirExists(tempDir);
   }

@@ -146,17 +146,15 @@ impl Evaluator {
 
         let temp_dir = if let Ok(tmp) = std::env::var("TOOLS_SCHEME_TMP_DIR") {
             let p = std::path::PathBuf::from(tmp);
-            if p.exists() {
-                p
-            } else {
+            if !p.exists() {
                 std::fs::create_dir_all(&p)?;
-                p
             }
-        } else if is_test {
-            std::env::current_dir()?
+            p
         } else {
             let p = std::env::temp_dir().join(TEMP_SUBDIR);
-            std::fs::create_dir_all(&p)?;
+            if !p.exists() {
+                std::fs::create_dir_all(&p)?;
+            }
             p
         };
 
