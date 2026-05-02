@@ -30,7 +30,6 @@ fn test_crlf_drift_stress() {
             Some(b) => b,
             None => break,
         };
-        // println!("Received: {}", body);
         if body.contains("workspace/inlayHint/refresh") {
             found_refresh = true;
             break;
@@ -44,27 +43,34 @@ fn test_crlf_drift_stress() {
 
     let mut last_line_correct = false;
     let mut results_count = 0;
+    let mut found_response = false;
 
-    let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
-        Some(b) => b,
-        None => panic!("Timeout waiting for inlay hint response"),
-    };
-    // println!("Received in loop 2: {}", body);
-    if body.contains("\"id\":3") {
-        let json: Value = serde_json::from_str(&body).unwrap();
-        let hints = json["result"].as_array().expect("result should be an array of InlayHint");
-        results_count = hints.len();
+    for _ in 0..100 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break,
+        };
 
-        for hint in hints {
-            if hint["position"]["line"] == 49 {
-                let label = hint["label"].as_str().unwrap();
-                if label.contains(" → 100") {
-                    last_line_correct = true;
+        if body.contains("\"id\":3") {
+            found_response = true;
+            let json: Value = serde_json::from_str(&body).unwrap();
+            let hints = json["result"].as_array().expect("result should be an array of InlayHint");
+            results_count = hints.len();
+
+            for hint in hints {
+                if hint["position"]["line"] == 49 {
+                    let label = hint["label"].as_str().unwrap();
+                    if label.contains(" → 100") {
+                        last_line_correct = true;
+                    }
                 }
             }
+            break;
         }
     }
 
+    assert!(found_response, "Did not receive response for inlay hint request id:3");
     assert!(results_count >= 50, "Expected at least 50 inlay hints, found: {}", results_count);
+
     assert!(last_line_correct, "The 50th evaluation result (line 49) was not found or had incorrect value/position.");
 }

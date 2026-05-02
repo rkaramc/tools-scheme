@@ -1,13 +1,11 @@
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::AtomicI32;
-use std::str::FromStr;
 use url::Url;
 use lsp_server::{Message, Request, RequestId};
 use lsp_types::{
     notification::{Notification as _, PublishDiagnostics},
     Diagnostic, DiagnosticSeverity, Position, PublishDiagnosticsParams, Range,
 };
-use crate::server::{SharedState, RwLockExt};
+use crate::server::WorkerResult;
 use crate::evaluator::{EvalResult, Evaluator};
 use crate::coordinates::LineIndex;
 use crate::documents::DocumentSnapshot;
@@ -151,22 +149,22 @@ pub fn eval_worker(
     mut evaluator: Evaluator,
     rx: crossbeam_channel::Receiver<EvalTask>,
     cancel_rx: crossbeam_channel::Receiver<u32>,
-    state: Arc<RwLock<SharedState>>,
+    result_tx: crossbeam_channel::Sender<WorkerResult>,
     sender: impl MessageSender,
 ) {
     for task in rx {
         match task.action {
             EvalAction::Evaluate { snapshot, content, version, offset, byte_range, request_id } => {
-                on_evaluate(&mut evaluator, &state, &sender, &task.uri, snapshot, content, version, offset, byte_range, request_id);
+                on_evaluate(&mut evaluator, &result_tx, &sender, &task.uri, snapshot, content, version, offset, byte_range, request_id);
             }
             EvalAction::Clear => {
-                on_clear(&mut evaluator, &state, &sender, &task.uri);
+                on_clear(&mut evaluator, &result_tx, &task.uri);
             }
             EvalAction::Restart => {
-                on_restart(&mut evaluator, &state, &sender);
+                on_restart(&mut evaluator, &result_tx);
             }
             EvalAction::EvalCell { snapshot, code, execution_id, notebook_uri, version } => {
-                on_eval_cell(&mut evaluator, &state, &sender, &cancel_rx, &task.uri, snapshot, notebook_uri, code, execution_id, version);
+                on_eval_cell(&mut evaluator, &result_tx, &sender, &cancel_rx, &task.uri, snapshot, notebook_uri, code, execution_id, version);
             }
             EvalAction::Parse { .. } => {
                 evaluator.log("WARNING: EvalWorker received Parse action. This should be routed to AnalysisActor.");
@@ -180,18 +178,16 @@ pub fn eval_worker(
 pub fn analysis_worker(
     mut evaluator: Evaluator,
     rx: crossbeam_channel::Receiver<EvalTask>,
-    state: Arc<RwLock<SharedState>>,
-    sender: impl MessageSender,
+    result_tx: crossbeam_channel::Sender<WorkerResult>,
+    _sender: impl MessageSender,
 ) {
+
     for task in rx {
         match task.action {
             EvalAction::Parse { snapshot, version } => {
-                // eprintln!("AnalysisWorker: Received Parse task for {} version {}", task.uri, version);
-                on_parse(&mut evaluator, &state, &sender, &task.uri, snapshot, version);
+                on_parse(&mut evaluator, &result_tx, &task.uri, snapshot, version);
             }
             EvalAction::Restart => {
-                // We only need to restart the evaluator process. We shouldn't clear the state here
-                // because eval_worker handles state clearing to avoid race conditions.
                 evaluator.log("AnalysisWorker: Restart triggered");
                 let _ = evaluator.restart();
             }
@@ -207,8 +203,8 @@ pub fn analysis_worker(
 #[allow(clippy::too_many_arguments)]
 fn on_evaluate(
     evaluator: &mut Evaluator,
-    state: &Arc<RwLock<SharedState>>,
-    sender: &impl MessageSender,
+    result_tx: &crossbeam_channel::Sender<WorkerResult>,
+    _sender: &impl MessageSender,
     uri_str: &str,
     snapshot: Option<DocumentSnapshot>,
     content: String,
@@ -217,26 +213,11 @@ fn on_evaluate(
     byte_range: Option<(u32, u32)>,
     request_id: RequestId,
 ) {
-    let uri = match lsp_types::Uri::from_str(uri_str) {
-        Ok(u) => u,
-        Err(_) => return,
-    };
-    let context_label = Url::parse(uri.as_str()).ok()
+    let context_label = Url::parse(uri_str).ok()
         .and_then(|u| u.to_file_path().ok())
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
 
-    let log_handle = {
-        let lock = state.read_recovered();
-        if let Some(doc) = lock.document_store.get(uri_str) {
-            if doc.version > version.unwrap_or(0) {
-                evaluator.log(&format!("Pre-flight check failed: doc version {} > task version {:?}", doc.version, version));
-                return;
-            }
-            doc.session_file.as_ref().and_then(|f| f.try_clone().ok())
-        } else {
-            None
-        }
-    };
+    let log_handle = snapshot.as_ref().and_then(|snap| snap.session_file.as_ref().as_ref()).and_then(|f| f.try_clone().ok());
 
     evaluator.log(&format!("EvalAction::Evaluate(content, version: {:?}, offset: {:?}, byte_range: {:?}, request_id: {:?})", version, offset, byte_range, request_id));
 
@@ -263,111 +244,28 @@ fn on_evaluate(
                 }
             }
 
-            // Normalize coordinates and build diagnostics.
-            let mut final_diagnostics = Vec::new();
-            let is_stale = {
-                let mut lock = state.write_recovered();
-                if let Some(doc) = lock.document_store.get_mut(uri_str) {
-                    if doc.version > version.unwrap_or(0) {
-                        evaluator.log(&format!("Post-flight check failed: doc version {} > task version {:?}", doc.version, version));
-                        true
-                    } else {
-                        // Use snapshot for normalization if available, otherwise use current document text/index
-                        let (norm_text, norm_index) = if let Some(snap) = &snapshot {
-                            (&*snap.text, &*snap.line_index)
-                        } else {
-                            (&*doc.text, &*doc.line_index)
-                        };
-
-                        if is_selection {
-                            recalculate_from_byte_pos(&mut results, norm_text, norm_index);
-                        } else {
-                            normalize_results(&mut results, norm_text, norm_index);
-                        }
-
-                        merge_results(&mut doc.results, results, byte_range);
-                        
-                        // Build diagnostics from the COMPOSITE results after merge
-                        final_diagnostics = doc.results
-                            .iter()
-                            .filter(|r| r.is_error)
-                            .map(|res| {
-                                let range = Range::new(
-                                    Position::new(res.line.saturating_sub(1), res.col),
-                                    Position::new(res.end_line.saturating_sub(1), res.end_col),
-                                );
-                                
-                                let mut severity = DiagnosticSeverity::ERROR;
-                                if uri_str.starts_with("vscode-notebook-cell:") {
-                                    let msg_lower = res.result.to_lowercase();
-                                    if msg_lower.contains("duplicate identifier") || msg_lower.contains("duplicate binding") {
-                                        severity = DiagnosticSeverity::WARNING;
-                                    }
-                                }
-
-                                Diagnostic {
-                                    range,
-                                    severity: Some(severity),
-                                    message: res.result.clone(),
-                                    ..Default::default()
-                                }
-                            })
-                            .collect();
-                        false
-                    }
+            // Use snapshot for normalization
+            if let Some(snap) = &snapshot {
+                if is_selection {
+                    recalculate_from_byte_pos(&mut results, &snap.text, &snap.line_index);
                 } else {
-                    // Fallback for one-off evaluations (no document in store)
-                    if let Some(snap) = &snapshot {
-                        if is_selection {
-                            recalculate_from_byte_pos(&mut results, &snap.text, &snap.line_index);
-                        } else {
-                            normalize_results(&mut results, &snap.text, &snap.line_index);
-                        }
-                    } else {
-                        let temp_idx = crate::coordinates::LineIndex::new(&content);
-                        if is_selection {
-                            recalculate_from_byte_pos(&mut results, &content, &temp_idx);
-                        } else {
-                            normalize_results(&mut results, &content, &temp_idx);
-                        }
-                    };
-
-                    final_diagnostics = results
-                        .iter()
-                        .filter(|r| r.is_error)
-                        .map(|res| {
-                            let range = Range::new(
-                                Position::new(res.line.saturating_sub(1), res.col),
-                                Position::new(res.end_line.saturating_sub(1), res.end_col),
-                            );
-
-                            let mut severity = DiagnosticSeverity::ERROR;
-                            if uri_str.starts_with("vscode-notebook-cell:") {
-                                let msg_lower = res.result.to_lowercase();
-                                if msg_lower.contains("duplicate identifier") || msg_lower.contains("duplicate binding") {
-                                    severity = DiagnosticSeverity::WARNING;
-                                }
-                            }
-
-                            Diagnostic {
-                                range,
-                                severity: Some(severity),
-                                message: res.result.clone(),
-                                ..Default::default()
-                            }
-                        })
-                        .collect();
-                    false
+                    normalize_results(&mut results, &snap.text, &snap.line_index);
+                }
+            } else {
+                let temp_idx = crate::coordinates::LineIndex::new(&content);
+                if is_selection {
+                    recalculate_from_byte_pos(&mut results, &content, &temp_idx);
+                } else {
+                    normalize_results(&mut results, &content, &temp_idx);
                 }
             };
 
-            if is_stale { return; }
-
-            // Publish composite diagnostics.
-            sender.send_diagnostics(uri, final_diagnostics, version);
-
-            // Ask the client to refresh inlay hints.
-            sender.refresh_inlay_hints();
+            let _ = result_tx.send(WorkerResult::EvaluateComplete {
+                uri: uri_str.to_string(),
+                version,
+                results,
+                byte_range,
+            });
         }
         Err(e) => {
             let diagnostics = vec![Diagnostic {
@@ -376,40 +274,25 @@ fn on_evaluate(
                 message: format!("Evaluation error: {}", e),
                 ..Default::default()
             }];
-            sender.send_diagnostics(uri, diagnostics, version);
+            let _ = result_tx.send(WorkerResult::EvaluationError {
+                uri: uri_str.to_string(),
+                version,
+                diagnostics,
+            });
         }
     }
 }
 
 fn on_parse(
     evaluator: &mut Evaluator,
-    state: &Arc<RwLock<SharedState>>,
-    sender: &impl MessageSender,
+    result_tx: &crossbeam_channel::Sender<WorkerResult>,
     uri_str: &str,
     snapshot: Option<DocumentSnapshot>,
     version: i32,
 ) {
-    evaluator.log(&format!("EvalAction::Parse(version: {:?}) for {}", version, uri_str));
-    
-    let (content, current_version) = if let Some(snap) = &snapshot {
-        (Some(Arc::clone(&snap.text)), Some(snap.version))
-    } else {
-        let lock = state.read_recovered();
-        if let Some(doc) = lock.document_store.get(uri_str) {
-            (Some(Arc::clone(&doc.text)), Some(doc.version))
-        } else {
-            (None, None)
-        }
-    };
-
-    if let (Some(c), Some(v)) = (content, current_version) {
-        if v > version {
-            evaluator.log("Skipping parse: newer version already in store");
-            return;
-        }
-
+    if let Some(snap) = &snapshot {
         // Use unified parser from Racket shim
-        let ranges = match evaluator.parse(&c, Some(uri_str)) {
+        let ranges = match evaluator.parse(&snap.text, Some(uri_str)) {
             Ok(r) => r,
             Err(e) => {
                 evaluator.log(&format!("Parse error: {}", e));
@@ -417,109 +300,41 @@ fn on_parse(
             }
         };
 
-        let is_stale = {
-            let mut lock = state.write_recovered();
-            if let Some(doc) = lock.document_store.get_mut(uri_str) {
-                if doc.version > version {
-                    evaluator.log(&format!("Post-flight check failed in Parse: doc version {} > task version {:?}", doc.version, version));
-                    true
-                } else {
-                    let mut final_ranges = Vec::new();
-                    for r in ranges {
-                        // Only show CodeLens for code blocks that are syntactically valid
-                        if r.kind == "code" && r.valid {
-                            let start_offset = (r.pos.saturating_sub(1)) as usize;
-                            let end_offset = start_offset + (r.span as usize);
-                            let range = doc.line_index.offset_to_range(&c, start_offset, end_offset);
-                            final_ranges.push(range);
-                        }
-                    }
-
-                    doc.ranges = final_ranges;
-                    evaluator.log(&format!("Assigned {} valid ranges", doc.ranges.len()));
-                    false
-                }
-            } else {
-                false
+        let mut final_ranges = Vec::new();
+        for r in ranges {
+            // Only show CodeLens for code blocks that are syntactically valid
+            if r.kind == "code" && r.valid {
+                let start_offset = (r.pos.saturating_sub(1)) as usize;
+                let end_offset = start_offset + (r.span as usize);
+                let range = snap.line_index.offset_to_range(&snap.text, start_offset, end_offset);
+                final_ranges.push(range);
             }
-        };
+        }
 
-        if is_stale { return; }
-
-        // Ask the client to refresh code lenses
-        sender.refresh_code_lenses();
+        let _ = result_tx.send(WorkerResult::ParseComplete {
+            uri: uri_str.to_string(),
+            version,
+            ranges: final_ranges,
+        });
     }
 }
 
 fn on_clear(
     evaluator: &mut Evaluator,
-    state: &Arc<RwLock<SharedState>>,
-    sender: &impl MessageSender,
+    result_tx: &crossbeam_channel::Sender<WorkerResult>,
     uri_str: &str,
 ) {
-    {
-        let lock = state.read_recovered();
-        let log = lock.document_store.get(uri_str).and_then(|doc| doc.session_file.as_ref());
-        let _ = evaluator.clear_namespace(uri_str, log);
-    }
-    let mut lock = state.write_recovered();
-    if let Some(doc) = lock.document_store.get_mut(uri_str) {
-        doc.results.clear();
-        evaluator.log(&format!("Cleared results for {}", uri_str));
-    } else {
-        evaluator.log(&format!("Document not found for clear: {}", uri_str));
-    }
-
-    evaluator.log("Namespace cleared, sending refreshes");
-    
-    // Trigger refreshes
-    sender.refresh_inlay_hints();
-    sender.refresh_code_lenses();
+    let _ = evaluator.clear_namespace(uri_str, None);
+    let _ = result_tx.send(WorkerResult::ClearNamespace { uri: uri_str.to_string() });
 }
 
 fn on_restart(
     evaluator: &mut Evaluator,
-    state: &Arc<RwLock<SharedState>>,
-    sender: &impl MessageSender,
+    result_tx: &crossbeam_channel::Sender<WorkerResult>,
 ) {
     evaluator.log("EvalAction::Restart triggered");
     let _ = evaluator.restart();
-    
-    let uris: Vec<String> = {
-        let mut lock = state.write_recovered();
-        let uris: Vec<String> = lock.document_store.iter().map(|(uri, _)| uri.clone()).collect();
-        for doc in lock.document_store.iter_mut() {
-            doc.results.clear();
-            doc.ranges.clear();
-        }
-        uris
-    };
-    
-    evaluator.log(&format!("Restart cleared state for {} documents", uris.len()));
-    
-    // Trigger refreshes for all documents
-    for uri_str in uris {
-        if let Ok(uri) = lsp_types::Uri::from_str(&uri_str) {
-            evaluator.log(&format!("Clearing diagnostics for {}", uri_str));
-            sender.send_diagnostics(uri, Vec::new(), None);
-        }
-    }
-
-    sender.refresh_inlay_hints();
-    sender.refresh_code_lenses();
-}
-
-
-fn merge_results(existing: &mut Vec<EvalResult>, new_results: Vec<EvalResult>, byte_range: Option<(u32, u32)>) {
-    if let Some((start, end)) = byte_range {
-        existing.retain(|res| {
-            let zero_indexed_pos = res.pos.saturating_sub(1);
-            zero_indexed_pos < start || zero_indexed_pos >= end
-        });
-        existing.extend(new_results);
-    } else {
-        *existing = new_results;
-    }
+    let _ = result_tx.send(WorkerResult::RestartComplete); // Gateway will clear all
 }
 
 fn normalize_results(results: &mut [EvalResult], text: &str, line_index: &LineIndex) {
@@ -558,14 +373,7 @@ mod tests {
     use super::*;
     use crate::evaluator::EvalResult;
     use std::time::Duration;
-
-    fn make_res(pos: u32, val: &str) -> EvalResult {
-        EvalResult {
-            line: 1, col: 0, end_line: 1, end_col: 0, span: 0,
-            pos, result: val.to_string(), is_error: false, output: "".to_string(),
-            kind: "code".to_string()
-        }
-    }
+    use std::str::FromStr;
 
     #[test]
     fn test_diagnostic_worker_debounce() {
@@ -682,48 +490,11 @@ mod tests {
 
         assert!(flushed_at_least_once, "Should have flushed during the long burst due to max_debounce_ms");
     }
-
-    #[test]
-    fn test_merge_results() {
-        let mut existing = vec![
-            make_res(10, "old1"),
-            make_res(20, "old2"),
-            make_res(30, "old3"),
-        ];
-
-        let new_results = vec![make_res(20, "new2")];
-        
-        // Merge with range covering old2 [15, 25]
-        // old2 pos=20. 20-1=19. 19 is in [15, 25].
-        merge_results(&mut existing, new_results, Some((15, 25)));
-
-        assert_eq!(existing.len(), 3);
-        assert_eq!(existing[0].result, "old1");
-        assert_eq!(existing[1].result, "old3");
-        assert_eq!(existing[2].result, "new2");
-
-        // Edge case: pos=10. 10-1=9. Range [10, 20]. 
-        // 9 < 10. Should NOT be cleared.
-        let mut existing = vec![make_res(10, "old")];
-        merge_results(&mut existing, vec![], Some((10, 20)));
-        assert_eq!(existing.len(), 1, "Boundary case: pos=10 (idx 9) should not be cleared by range [10, 20]");
-
-        // Edge case: pos=11. 11-1=10. Range [10, 20].
-        // 10 >= 10. Should BE cleared.
-        let mut existing = vec![make_res(11, "old")];
-        merge_results(&mut existing, vec![], Some((10, 20)));
-        assert_eq!(existing.len(), 0, "Boundary case: pos=11 (idx 10) should be cleared by range [10, 20]");
-        
-        // Full overwrite
-        merge_results(&mut existing, vec![make_res(50, "final")], None);
-        assert_eq!(existing.len(), 1);
-        assert_eq!(existing[0].result, "final");
-    }
 }
 
 fn on_eval_cell(
     evaluator: &mut Evaluator,
-    state: &Arc<RwLock<SharedState>>,
+    result_tx: &crossbeam_channel::Sender<WorkerResult>,
     sender: &impl MessageSender,
     cancel_rx: &crossbeam_channel::Receiver<u32>,
     uri_str: &str,
@@ -733,10 +504,6 @@ fn on_eval_cell(
     execution_id: u32,
     version: Option<i32>,
 ) {
-    let uri = match lsp_types::Uri::from_str(uri_str) {
-        Ok(u) => u,
-        Err(_) => return,
-    };
     let eval_uri = notebook_uri.as_deref().unwrap_or(uri_str);
     
     let mut diagnostics = Vec::new();
@@ -813,22 +580,11 @@ fn on_eval_cell(
         }
     });
 
-    // Check post-flight version before sending diagnostics
-    let is_stale = {
-        let lock = state.read_recovered();
-        if let Some(doc) = lock.document_store.get(uri_str) {
-            doc.version > version.unwrap_or(0)
-        } else {
-            false
-        }
-    };
-
-    if is_stale {
-        evaluator.log(&format!("Post-flight check failed in EvalCell: document version > task version {:?}", version));
-    } else {
-        // Send collected diagnostics for the cell
-        sender.send_diagnostics(uri, diagnostics, version);
-    }
+    let _ = result_tx.send(WorkerResult::CellEvaluationComplete {
+        uri: uri_str.to_string(),
+        version,
+        diagnostics,
+    });
 
     let eval_finished_params = match result {
         Ok(_) => serde_json::json!({
