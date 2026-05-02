@@ -5,6 +5,10 @@
 (define cache-counter 0)
 (define MAX-CACHE-SIZE (make-parameter 100))
 (define MAX-OUTPUT-SIZE (make-parameter 10000))
+(define uri-output-counts (make-hash)) ; uri -> box(hash(type -> count))
+
+(define (get-output-counts uri)
+  (hash-ref! uri-output-counts uri (lambda () (box (make-hash)))))
 
 (define current-repl-output-port (make-parameter (current-output-port)))
 (define file-content-cache (make-hash))
@@ -24,7 +28,7 @@
       (values (max 1 (unbox wb)) (max 1 (unbox hb)))))
   (define bmp (make-bitmap (inexact->exact (ceiling w)) (inexact->exact (ceiling h))))
   (define dc (make-object bitmap-dc% bmp))
-  (send s draw dc 0 0 0 0 w h 0 0 '())
+  (send s draw dc 0 0 0 0 w h 0 0 'no-caret)
   (define out (open-output-bytes))
   (send bmp save-file out 'png)
   (bytes->string/utf-8 (base64-encode (get-output-bytes out))))
@@ -256,6 +260,8 @@
                  ;; against the file's own directory (ts-k2w).
                  [current-load-relative-directory file-dir]
                  [current-directory               file-dir])
+    ;; Reset output counts for standalone evaluation
+    (set-box! (get-output-counts (or (path->string file-path) "repl")) (make-hash))
     (let ([ns (make-base-namespace)])
       (namespace-attach-module (current-namespace) 'racket/class ns)
       (namespace-attach-module (current-namespace) 'racket/snip ns)
@@ -388,15 +394,27 @@
          (string->path native))))
 
 (define (make-streaming-port type uri)
+  (define counts-box (get-output-counts uri))
   (make-output-port
    (symbol->string type)
    always-evt
    (lambda (s start end non-block? breakable?)
-     (define str (bytes->string/utf-8 (subbytes s start end) #\?))
-     (define msg (hash 'type "output" 'stream (symbol->string type) 'data str 'uri uri))
-     (displayln (jsexpr->string msg) (current-repl-output-port))
-     (flush-output (current-repl-output-port))
-     (- end start))
+     (define counts (unbox counts-box))
+     (define len (- end start))
+     (define total-written (hash-ref counts type 0))
+     (define limit (MAX-OUTPUT-SIZE))
+     (cond
+       [(>= total-written limit) len]
+       [else
+        (let* ([to-write (min len (- limit total-written))]
+               [str (bytes->string/utf-8 (subbytes s start (+ start to-write)) #\?)]
+               [truncated? (< to-write len)]
+               [final-str (if truncated? (string-append str "... [truncated]") str)])
+          (hash-set! counts type (+ total-written to-write))
+          (define msg (hash 'type "output" 'stream (symbol->string type) 'data final-str 'uri uri))
+          (displayln (jsexpr->string msg) (current-repl-output-port))
+          (flush-output (current-repl-output-port))
+          len)]))
    void))
 
 (define (get-evaluator uri content)
@@ -442,6 +460,9 @@
                      (make-evaluator lang))))))
 
 (define (evaluate-string-content content uri ev)
+  ;; Reset output counts for each evaluation session
+  (set-box! (get-output-counts (or uri "repl")) (make-hash))
+
   (define file-path (uri->path uri))
   (define source    (or file-path uri 'repl))
   (define cached (cache-content! content (or uri 'repl)))
@@ -752,7 +773,7 @@
         (let ([output (get-output-string out-port)])
           (check-regexp-match #px"Evaluation cancelled" output)
           (check-regexp-match #px"READY\n" output))
-        
+
         ;; Cleanup
         (close-output-port in-wr)
         (sync/timeout 2 repl-thread)
