@@ -16,18 +16,21 @@ Welcome to the **Tools Scheme** repository. This document provides essential con
 ## Code Conventions
 
 - **Rust**: Follow idiomatic Rust coding and formatting (`cargo fmt`). Keep things simple and rely on explicit error handling (`anyhow`).
+  - **JSON**: Always use the `serde_json::json!` macro for constructing LSP payloads in tests or code to ensure correct character escaping. Manual string formatting for JSON is prone to errors.
 - **TypeScript**: Use strict typing. Avoid `any`. Run `npm run lint` to verify. Follow existing styles for naming and spacing.
 
 ## Boundaries
 
 - Never commit broken builds; verify locally with `just debug` and `just test` / `cargo test` / `npm test`.
 - Do not refactor adjacent code or modify architectural designs unless explicitly instructed.
+- **Testing**: LSP integration tests (`lsp/tests/integration.rs`) MUST be run with `--test-threads=1`. Parallel execution causes resource contention in the Racket sandboxes and leads to false failures.
 
 ## Tooling
 
 - **Just**: Task runner using the [Just]() tool. See `justfile` for available commands (build, package, install, test).
 - **Beads**: Issue tracking using the [Beads](https://github.com/steveyegge/beads) system. Agents should use the `beads-tracking` skill.
 - **Jujutsu**: Version control using the [Jujutsu](https://docs.jj-vcs.dev/) system (also known as `jj` or `jj-vcs`). Agents should use the `jj-vcs` skill.
+- **Search**: Prefer `rg` (ripgrep) over `grep`. This ensures cross-platform compatibility, especially on Windows/PowerShell environments where standard `grep` pipes may be missing or behave differently.
 
 > [!NOTE]
 > Tooling preferences (e.g., JJ vs Git, Beads vs Markdown Todos) are managed via personal overrides in `.agents/local.md`. Agents should check for that file for user-specific workflow instructions.
