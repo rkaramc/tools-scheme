@@ -80,6 +80,44 @@ install: release
         exit 1; \
     }
 
+# Configure Helix to use scheme-toolbox-lsp
+configure-helix:
+    echo ">>> Configuring Helix..."
+    {{ if os == "windows" { \
+        "$helixDir = Join-Path $env:AppData 'helix'; \
+        if (!(Test-Path $helixDir)) { $null = New-Item -ItemType Directory -Path $helixDir }; \
+        $langFile = Join-Path $helixDir 'languages.toml'; \
+        $config = Get-Content editors/helix/languages.toml -Raw; \
+        if (Test-Path $langFile) { \
+            $existing = Get-Content $langFile -Raw; \
+            if ($existing -notlike '*scheme-toolbox-lsp*') { \
+                Add-Content $langFile \"`n$config\"; \
+                echo 'Appended configuration to ' + $langFile; \
+            } else { \
+                echo 'Helix is already configured for scheme-toolbox-lsp.'; \
+            } \
+        } else { \
+            Set-Content $langFile $config; \
+            echo 'Created ' + $langFile; \
+        }" \
+    } else { \
+        "HELIX_DIR=\"$HOME/.config/helix\"; \
+        mkdir -p \"$HELIX_DIR\"; \
+        LANG_FILE=\"$HELIX_DIR/languages.toml\"; \
+        CONFIG=$(cat editors/helix/languages.toml); \
+        if [ -f \"$LANG_FILE\" ]; then \
+            if ! grep -q \"scheme-toolbox-lsp\" \"$LANG_FILE\"; then \
+                echo -e \"\\n$CONFIG\" >> \"$LANG_FILE\"; \
+                echo \"Appended configuration to $LANG_FILE\"; \
+            else \
+                echo \"Helix is already configured for scheme-toolbox-lsp.\"; \
+            fi; \
+        else \
+            echo \"$CONFIG\" > \"$LANG_FILE\"; \
+            echo \"Created $LANG_FILE\"; \
+        fi" \
+    } }}
+
 # Publication orchestration and guide reference
 publish:
     echo "Note: Publication involves manual steps and registry setup."

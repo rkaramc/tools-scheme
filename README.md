@@ -59,5 +59,5 @@ This repository is designed to be agent-friendly. If you are using an AI assista
 - **LSP Server:** Active development (Rust 2024). Supporting diagnostics and inlay hints.
 - **Editor Support:**
   - **VS Code:** Active development / Beta
-  - **Helix:** Planning
+  - **Helix:** Active development / Beta
   - **Zed:** Planning
