@@ -13,7 +13,7 @@ pub struct Document {
     pub version: i32,
     pub text: Arc<String>,
     pub line_index: Arc<LineIndex>,
-    pub session_file: Option<File>,
+    pub session_file: Arc<Option<File>>,
     pub results: Vec<EvalResult>,
     pub ranges: Vec<Range>,
 }
@@ -24,6 +24,7 @@ pub struct DocumentSnapshot {
     pub version: i32,
     pub text: Arc<String>,
     pub line_index: Arc<LineIndex>,
+    pub session_file: Arc<Option<File>>,
 }
 
 impl Document {
@@ -33,6 +34,7 @@ impl Document {
             version: self.version,
             text: Arc::clone(&self.text),
             line_index: Arc::clone(&self.line_index),
+            session_file: Arc::clone(&self.session_file),
         }
     }
 }
@@ -77,7 +79,7 @@ impl DocumentStore {
                 version: item.version,
                 text: Arc::new(item.text),
                 line_index: Arc::new(line_index),
-                session_file,
+                session_file: Arc::new(session_file),
                 results: Vec::new(),
                 ranges: Vec::new(),
             },
@@ -103,8 +105,13 @@ impl DocumentStore {
     }
 
     pub fn close(&mut self, uri: &str) {
-        if let Some(mut file) = self.documents.remove(uri).and_then(|d| d.session_file) {
-            let _ = file.flush();
+        if let Some(doc) = self.documents.remove(uri) {
+            if let Some(file) = &*doc.session_file {
+                let file_cloned = file.try_clone().ok();
+                if let Some(mut f) = file_cloned {
+                    let _ = f.flush();
+                }
+            }
         }
     }
 

@@ -1,4 +1,4 @@
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::str::FromStr;
 use lsp_server::{Message, Request, RequestId, Response, Notification};
 use lsp_types::{
     notification::{
@@ -7,30 +7,41 @@ use lsp_types::{
     request::{
         CodeActionRequest, ExecuteCommand, InlayHintRequest, CodeLensRequest,
     },
-    CodeLens, Command, InlayHint, CodeActionKind, Range,
+    CodeLens, Command, InlayHint, CodeActionKind, Range, Diagnostic,
 };
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 
 use crate::documents::DocumentStore;
-use crate::worker::{EvalTask, EvalAction};
+use crate::worker::{EvalTask, EvalAction, DiagnosticWorkerSender};
 use crate::dispatch::{RequestDispatcher, NotificationDispatcher};
+use crate::evaluator::EvalResult;
 
-pub struct SharedState {
-    pub document_store: DocumentStore,
-}
-
-pub trait RwLockExt<T> {
-    fn read_recovered(&self) -> RwLockReadGuard<'_, T>;
-    fn write_recovered(&self) -> RwLockWriteGuard<'_, T>;
-}
-
-impl<T> RwLockExt<T> for RwLock<T> {
-    fn read_recovered(&self) -> RwLockReadGuard<'_, T> {
-        self.read().unwrap_or_else(|e| e.into_inner())
-    }
-    fn write_recovered(&self) -> RwLockWriteGuard<'_, T> {
-        self.write().unwrap_or_else(|e| e.into_inner())
+pub enum WorkerResult {
+    EvaluateComplete {
+        uri: String,
+        version: Option<i32>,
+        results: Vec<EvalResult>,
+        byte_range: Option<(u32, u32)>,
+    },
+    ParseComplete {
+        uri: String,
+        version: i32,
+        ranges: Vec<Range>,
+    },
+    ClearNamespace {
+        uri: String,
+    },
+    RestartComplete,
+    CellEvaluationComplete {
+        uri: String,
+        version: Option<i32>,
+        diagnostics: Vec<Diagnostic>,
+    },
+    EvaluationError {
+        uri: String,
+        version: Option<i32>,
+        diagnostics: Vec<Diagnostic>,
     }
 }
 
@@ -81,7 +92,8 @@ pub struct Server {
     pub eval_tx: crossbeam_channel::Sender<EvalTask>,
     pub analysis_tx: crossbeam_channel::Sender<EvalTask>,
     pub cancel_tx: crossbeam_channel::Sender<u32>,
-    pub state: Arc<RwLock<SharedState>>,
+    pub document_store: DocumentStore,
+    pub sender: DiagnosticWorkerSender,
 }
 
 pub enum LoopAction {
@@ -90,39 +102,177 @@ pub enum LoopAction {
 }
 
 impl Server {
-    pub fn read_state(&'_ self) -> RwLockReadGuard<'_, SharedState> {
-        self.state.read_recovered()
-    }
-
-    pub fn write_state(&'_ self) -> RwLockWriteGuard<'_, SharedState> {
-        self.state.write_recovered()
-    }
-
-    pub fn main_loop(&mut self, connection: &lsp_server::Connection) -> Result<LoopAction, Box<dyn Error + Sync + Send>> {
+    pub fn main_loop(
+        &mut self, 
+        connection: &lsp_server::Connection,
+        worker_rx: &crossbeam_channel::Receiver<WorkerResult>,
+    ) -> Result<LoopAction, Box<dyn Error + Sync + Send>> {
         let mut shutting_down = false;
-        for msg in &connection.receiver {
-            match msg {
-                Message::Request(req) => {
-                    if shutting_down {
-                        continue;
+        loop {
+            crossbeam_channel::select! {
+                recv(&connection.receiver) -> msg => {
+                    match msg {
+                        Ok(Message::Request(req)) => {
+                            if shutting_down {
+                                continue;
+                            }
+                            if connection.handle_shutdown(&req)? {
+                                shutting_down = true;
+                                continue;
+                            }
+                            self.handle_request(connection, req)?;
+                        }
+                        Ok(Message::Response(_resp)) => {}
+                        Ok(Message::Notification(not)) => {
+                            if not.method == "exit" {
+                                return Ok(LoopAction::Exit);
+                            }
+                            self.handle_notification(not)?;
+                        }
+                        Err(_) => break, // Connection closed
                     }
-                    if connection.handle_shutdown(&req)? {
-                        shutting_down = true;
-                        continue;
-                    }
-                    self.handle_request(connection, req)?;
                 }
-                Message::Response(_resp) => {}
-                Message::Notification(not) => {
-                    if not.method == "exit" {
-                        return Ok(LoopAction::Exit);
+                recv(worker_rx) -> msg => {
+                    if let Ok(worker_res) = msg {
+                        self.handle_worker_result(worker_res);
                     }
-                    self.handle_notification(not)?;
                 }
             }
         }
         Ok(LoopAction::Continue)
     }
+
+    fn handle_worker_result(&mut self, result: WorkerResult) {
+        use crate::worker::MessageSender;
+        use lsp_types::{DiagnosticSeverity, Position};
+
+        match result {
+            WorkerResult::EvaluateComplete { uri, version, results, byte_range } => {
+                if let Some(doc) = self.document_store.get_mut(&uri) {
+                    if doc.version <= version.unwrap_or(0) {
+                        merge_results(&mut doc.results, results, byte_range);
+                        
+                        // Build COMPOSITE diagnostics from the full results list
+                        let composite_diagnostics: Vec<Diagnostic> = doc.results
+                            .iter()
+                            .filter(|r| r.is_error)
+                            .map(|res| {
+                                let range = Range::new(
+                                    Position::new(res.line.saturating_sub(1), res.col),
+                                    Position::new(res.end_line.saturating_sub(1), res.end_col),
+                                );
+                                
+                                let mut severity = DiagnosticSeverity::ERROR;
+                                if uri.starts_with("vscode-notebook-cell:") {
+                                    let msg_lower = res.result.to_lowercase();
+                                    if msg_lower.contains("duplicate identifier") || msg_lower.contains("duplicate binding") {
+                                        severity = DiagnosticSeverity::WARNING;
+                                    }
+                                }
+
+                                Diagnostic {
+                                    range,
+                                    severity: Some(severity),
+                                    message: res.result.clone(),
+                                    ..Default::default()
+                                }
+                            })
+                            .collect();
+
+                        if let Ok(lsp_uri) = lsp_types::Uri::from_str(&uri) {
+                            self.sender.send_diagnostics(lsp_uri, composite_diagnostics, version);
+                        }
+                        self.sender.refresh_inlay_hints();
+                    }
+                } else {
+                    // Fallback for one-off evaluations (no document in store)
+                    let diagnostics: Vec<Diagnostic> = results
+                        .iter()
+                        .filter(|r| r.is_error)
+                        .map(|res| {
+                            let range = Range::new(
+                                Position::new(res.line.saturating_sub(1), res.col),
+                                Position::new(res.end_line.saturating_sub(1), res.end_col),
+                            );
+                            
+                            let mut severity = DiagnosticSeverity::ERROR;
+                            if uri.starts_with("vscode-notebook-cell:") {
+                                let msg_lower = res.result.to_lowercase();
+                                if msg_lower.contains("duplicate identifier") || msg_lower.contains("duplicate binding") {
+                                    severity = DiagnosticSeverity::WARNING;
+                                }
+                            }
+
+                            Diagnostic {
+                                range,
+                                severity: Some(severity),
+                                message: res.result.clone(),
+                                ..Default::default()
+                            }
+                        })
+                        .collect();
+
+                    if let Ok(lsp_uri) = lsp_types::Uri::from_str(&uri) {
+                        self.sender.send_diagnostics(lsp_uri, diagnostics, version);
+                    }
+                    self.sender.refresh_inlay_hints();
+                }
+            }
+            WorkerResult::ParseComplete { uri, version, ranges } => {
+                // eprintln!("Gateway: Received ParseComplete for {} version {}", uri, version);
+                if let Some(doc) = self.document_store.get_mut(&uri) {
+                    if doc.version <= version {
+                        doc.ranges = ranges;
+                        self.sender.refresh_code_lenses();
+                    }
+                }
+            }
+            WorkerResult::ClearNamespace { uri } => {
+                // eprintln!("Gateway: Received ClearNamespace for {}", uri);
+                if let Some(doc) = self.document_store.get_mut(&uri) {
+                    doc.results.clear();
+                    if let Ok(lsp_uri) = lsp_types::Uri::from_str(&uri) {
+                        self.sender.send_diagnostics(lsp_uri, Vec::new(), None);
+                    }
+                    self.sender.refresh_inlay_hints();
+                    self.sender.refresh_code_lenses();
+                }
+            }
+            WorkerResult::RestartComplete => {
+                eprintln!("Gateway: Received RestartComplete");
+                // Clear state for ALL documents
+                let uris: Vec<String> = self.document_store.iter().map(|(uri, _)| uri.clone()).collect();
+                for uri in uris {
+                    if let Some(doc) = self.document_store.get_mut(&uri) {
+                        doc.results.clear();
+                        doc.ranges.clear();
+                        if let Ok(lsp_uri) = lsp_types::Uri::from_str(&uri) {
+                            self.sender.send_diagnostics(lsp_uri, Vec::new(), None);
+                        }
+                    }
+                }
+                self.sender.refresh_inlay_hints();
+                self.sender.refresh_code_lenses();
+            }
+            WorkerResult::CellEvaluationComplete { uri, version, diagnostics } => {
+                // eprintln!("Gateway: Received CellEvaluationComplete for {} version {:?}", uri, version);
+                if let Some(doc) = self.document_store.get_mut(&uri) {
+                    if doc.version <= version.unwrap_or(0) {
+                        if let Ok(lsp_uri) = lsp_types::Uri::from_str(&uri) {
+                            self.sender.send_diagnostics(lsp_uri, diagnostics, version);
+                        }
+                    }
+                }
+            }
+            WorkerResult::EvaluationError { uri, version, diagnostics } => {
+                eprintln!("Gateway: Received EvaluationError for {} version {:?}", uri, version);
+                if let Ok(lsp_uri) = lsp_types::Uri::from_str(&uri) {
+                    self.sender.send_diagnostics(lsp_uri, diagnostics, version);
+                }
+            }
+        }
+    }
+
 
     pub fn handle_request(&mut self, connection: &lsp_server::Connection, req: Request) -> Result<(), Box<dyn Error + Sync + Send>> {
         let _req = RequestDispatcher::new(req)
@@ -139,11 +289,9 @@ impl Server {
             .on_sync_mut::<DidOpenTextDocument>(|params| {
                 let uri = params.text_document.uri.to_string();
                 let version = params.text_document.version;
-                let snapshot = {
-                    let mut lock = self.write_state();
-                    lock.document_store.open(params.text_document);
-                    lock.document_store.get(&uri).map(|d| d.snapshot(uri.clone()))
-                };
+                eprintln!("Gateway: Opening {} (version {})", uri, version);
+                self.document_store.open(params.text_document);
+                let snapshot = self.document_store.get(&uri).map(|d| d.snapshot(uri.clone()));
                 
                 // Trigger background parse immediately on open to populate ranges for CodeLens
                 if let Err(e) = self.analysis_tx.send(EvalTask {
@@ -157,14 +305,14 @@ impl Server {
             .on_sync_mut::<DidChangeTextDocument>(|params| {
                 let uri = params.text_document.uri.to_string();
                 let version = params.text_document.version;
+                eprintln!("Gateway: Changing {} (version {})", uri, version);
                 let snapshot = if let Some(change) = params.content_changes.into_iter().last() {
-                    let mut lock = self.write_state();
                     let new_text = change.text;
                     let new_idx = crate::coordinates::LineIndex::new(&new_text);
-                    lock.document_store.update_text_and_index(&uri, version, new_text, new_idx);
-                    lock.document_store.get(&uri).map(|d| d.snapshot(uri.clone()))
+                    self.document_store.update_text_and_index(&uri, version, new_text, new_idx);
+                    self.document_store.get(&uri).map(|d| d.snapshot(uri.clone()))
                 } else {
-                    self.read_state().document_store.get(&uri).map(|d| d.snapshot(uri.clone()))
+                    self.document_store.get(&uri).map(|d| d.snapshot(uri.clone()))
                 };
                 
                 // Submit background parse task
@@ -177,11 +325,11 @@ impl Server {
                 Ok(())
             })?
             .on_sync_mut::<DidCloseTextDocument>(|params| {
-                self.write_state().document_store.close(params.text_document.uri.as_str());
+                self.document_store.close(params.text_document.uri.as_str());
                 Ok(())
             })?
             .on_sync_mut::<EvalCellNotification>(|params| {
-                let snapshot = self.read_state().document_store.get(&params.uri).map(|d| d.snapshot(params.uri.clone()));
+                let snapshot = self.document_store.get(&params.uri).map(|d| d.snapshot(params.uri.clone()));
                 if let Err(e) = self.eval_tx.send(EvalTask {
                     uri: params.uri,
                     action: EvalAction::EvalCell { 
@@ -213,7 +361,7 @@ impl Server {
         
         // Add "Evaluate Selection" action if range is not empty
         if params.range.start != params.range.end {
-            if let Some(doc) = self.read_state().document_store.get(&uri) {
+            if let Some(doc) = self.document_store.get(&uri) {
                 let text = doc.line_index.get_text_range(&doc.text, params.range);
                 let cmd = Command {
                     title: "Evaluate Selection".to_string(),
@@ -257,8 +405,7 @@ impl Server {
         match cmd {
             Ok(SchemeCommand::Evaluate((uri,))) => {
                 let (snapshot, content, version) = {
-                    let lock = self.read_state();
-                    if let Some(doc) = lock.document_store.get(&uri) {
+                    if let Some(doc) = self.document_store.get(&uri) {
                         (Some(doc.snapshot(uri.clone())), (*doc.text).clone(), Some(doc.version))
                     } else {
                         return Ok(());
@@ -281,10 +428,9 @@ impl Server {
             }
             Ok(SchemeCommand::EvaluateSelection((uri, text, range))) => {
                 let (snapshot, version, byte_range) = {
-                    let lock = self.read_state();
-                    if let Some(doc) = lock.document_store.get(&uri) {
-                        let start_byte = lock.document_store.position_to_byte(&uri, range.start);
-                        let end_byte = lock.document_store.position_to_byte(&uri, range.end);
+                    if let Some(doc) = self.document_store.get(&uri) {
+                        let start_byte = self.document_store.position_to_byte(&uri, range.start);
+                        let end_byte = self.document_store.position_to_byte(&uri, range.end);
                         (Some(doc.snapshot(uri.clone())), Some(doc.version), Some((start_byte, end_byte)))
                     } else {
                         (None, None, None)
@@ -341,7 +487,8 @@ impl Server {
         let uri = params.text_document.uri.to_string();
         let mut hints = Vec::new();
 
-        if let Some(doc) = self.read_state().document_store.get(&uri) {
+        if let Some(doc) = self.document_store.get(&uri) {
+            eprintln!("Gateway: Found document {} with {} results for inlay hints", uri, doc.results.len());
             for res in &doc.results {
                 if !res.is_error && res.result != "void" {
                     hints.push(InlayHint {
@@ -356,6 +503,8 @@ impl Server {
                     });
                 }
             }
+        } else {
+            eprintln!("Gateway: Document {} NOT FOUND for inlay hints", uri);
         }
 
         let resp = Response::new_ok(id, hints);
@@ -373,7 +522,7 @@ impl Server {
             return Ok(());
         }
 
-        if let Some(doc) = self.read_state().document_store.get(&uri_str) {
+        if let Some(doc) = self.document_store.get(&uri_str) {
             for range in &doc.ranges {
                 let selected_text = doc.line_index.get_text_range(&doc.text, *range);
                 let cmd = Command {
@@ -393,5 +542,17 @@ impl Server {
         let resp = Response::new_ok(id, lenses);
         connection.sender.send(Message::Response(resp))?;
         Ok(())
+    }
+}
+
+fn merge_results(existing: &mut Vec<EvalResult>, new_results: Vec<EvalResult>, byte_range: Option<(u32, u32)>) {
+    if let Some((start, end)) = byte_range {
+        existing.retain(|res| {
+            let zero_indexed_pos = res.pos.saturating_sub(1);
+            zero_indexed_pos < start || zero_indexed_pos >= end
+        });
+        existing.extend(new_results);
+    } else {
+        *existing = new_results;
     }
 }
