@@ -963,3 +963,54 @@ fn test_graceful_shutdown() {
     assert!(status.success(), "LSP process did not exit cleanly (success/code 0). Got status: {}", status);
 }
 
+#[test]
+fn test_pull_rich_media() {
+    let mut lsp = LspProcess::spawn();
+    lsp.initialize();
+
+    // 1. Evaluate a cell that produces a snip (rich media)
+    let code = "(require racket/snip racket/class racket/draw) (make-object image-snip% (make-object bitmap% 1 1))";
+    let eval_cell = format!(r#"{{"jsonrpc":"2.0","method":"scheme/notebook/evalCell","params":{{"uri":"file:///rich.rkt","code":"{}","executionId":60}}}}"#, code.replace("\"", "\\\""));
+    lsp.write_message(&eval_cell);
+
+    let mut rich_id = String::new();
+    for _ in 0..20 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(10)) {
+            Some(b) => b,
+            None => break,
+        };
+        if body.contains("scheme/notebook/outputStream") && body.contains("\"type\":\"rich\"") {
+            // Extract the id
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                if let Some(id) = v["params"]["payload"]["id"].as_str() {
+                    rich_id = id.to_string();
+                    break;
+                }
+            }
+        }
+    }
+    assert!(!rich_id.is_empty(), "Did not receive rich media notification with ID");
+
+    // 2. Pull the rich media
+    let pull_req = format!(r#"{{"jsonrpc":"2.0","id":61,"method":"scheme/notebook/pullRichMedia","params":{{"id":"{}"}}}}"#, rich_id);
+    lsp.write_message(&pull_req);
+
+    let mut found_data = false;
+    for _ in 0..10 {
+        let body = match lsp.read_message_timeout(Duration::from_secs(5)) {
+            Some(b) => b,
+            None => break,
+        };
+        if body.contains("\"id\":61") {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                if let Some(data) = v["result"]["data"].as_str() {
+                    assert!(!data.is_empty(), "Received empty data for rich media pull");
+                    found_data = true;
+                    break;
+                }
+            }
+        }
+    }
+    assert!(found_data, "Did not receive rich media data response");
+}
+

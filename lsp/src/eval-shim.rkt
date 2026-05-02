@@ -14,6 +14,14 @@
 (define file-content-cache (make-hash))
 (define cache-access-log (make-hash))
 (define document-evaluators (make-hash))
+(define rich-media-cache (make-hash))
+(define rich-media-counter 0)
+
+(define (cache-rich-media! data)
+  (set! rich-media-counter (+ rich-media-counter 1))
+  (define id (format "rich-~a" rich-media-counter))
+  (hash-set! rich-media-cache id data)
+  id)
 
 (define current-eval-thread #f)
 (define current-parse-thread #f)
@@ -69,30 +77,24 @@
           'span (or span 0)
           'pos (or pos 1)))
 
-(define (truncate-string str limit)
-  (if (> (string-length str) limit)
-      (string-append (substring str 0 limit) "... [truncated]")
-      str))
-
 (define (display-result range val #:is-error [is-error #f] #:output [output ""])
   (define snip (is-a? val snip%))
   (define result-str
     (cond
       [snip "Rich media"]
-      [else (truncate-string (if (exn? val) (exn-message val) (format "~v" val)) (MAX-OUTPUT-SIZE))]))
-  
-  (define output-str
-    (truncate-string output (MAX-OUTPUT-SIZE)))
+      [else (if (exn? val) (exn-message val) (format "~v" val))]))
 
   (define base
     (hash-set* range
                'result result-str
                'is_error is-error
-               'output output-str))
-  
+               'output output))
+
   ;; For rich media, also emit a dedicated rich payload if it's a snip
   (when snip
-    (define rich (hash 'type "rich" 'mime "image/png" 'data (snip->base64-png val)))
+    (define data (snip->base64-png val))
+    (define id (cache-rich-media! data))
+    (define rich (hash 'type "rich" 'mime "image/png" 'id id))
     (displayln (jsexpr->string rich) (current-repl-output-port)))
 
   (displayln (jsexpr->string base) (current-repl-output-port))
@@ -101,10 +103,10 @@
 (define (get-syntax-end stx)
   ;; Note: This function provides simplified placeholder coordinates (assuming single-line spans).
   ;; The Language Server Protocol requires end_line and end_col fields in the JSON payload,
-  ;; but calculating accurate multi-line boundaries and UTF-16 code unit offsets in Racket 
-  ;; is inefficient and complex due to CRLF and emoji handling. 
-  ;; Instead, the Rust-side LSP server (in `server.rs` `recalculate_from_byte_pos`) 
-  ;; completely ignores these values and recalculates `end_line` and `end_col` precisely 
+  ;; but calculating accurate multi-line boundaries and UTF-16 code unit offsets in Racket
+  ;; is inefficient and complex due to CRLF and emoji handling.
+  ;; Instead, the Rust-side LSP server (in `server.rs` `recalculate_from_byte_pos`)
+  ;; completely ignores these values and recalculates `end_line` and `end_col` precisely
   ;; using the `span`, `line`, and the raw text buffer.
   (let ([pos (and stx (syntax-position stx))]
         [span (and stx (syntax-span stx))]
@@ -207,28 +209,28 @@
     (for-each-syntax port source
                      (lambda (stx)
                        (with-handlers ([exn:fail? (lambda (e)
-                                                     (define-values (l c end-c span pos) (get-exn-location e stx))
-                                                     (display-result (make-range l (or (syntax-column stx) 0) l end-c span pos) e #:is-error #t))])
+                                                    (define-values (l c end-c span pos) (get-exn-location e stx))
+                                                    (display-result (make-range l (or (syntax-column stx) 0) l end-c span pos) e #:is-error #t))])
                          (define stx-list (syntax->list stx))
                          (if (and stx-list
                                   (>= (length stx-list) 4)
                                   (eq? (syntax-e (car stx-list)) 'module))
                              ;; Module form: require lang, eval body forms directly.
-                             (let* ([lang       (syntax->datum (caddr stx-list))]
-                                    [raw-body   (cdddr stx-list)]
+                             (let* ([lang (syntax->datum (caddr stx-list))]
+                                    [raw-body (cdddr stx-list)]
                                     ;; After read-syntax the body is a single
                                     ;; (lang:module-begin form ...) wrapper.
                                     ;; Unwrap it to get the real forms.
-                                    [body       (let ([mb (and (= (length raw-body) 1)
-                                                               (syntax->list (car raw-body)))])
-                                                  (if mb (cdr mb) raw-body))]
-                                    [m-ns       (current-namespace)]
+                                    [body (let ([mb (and (= (length raw-body) 1)
+                                                         (syntax->list (car raw-body)))])
+                                            (if mb (cdr mb) raw-body))]
+                                    [m-ns (current-namespace)]
                                     ;; File directory for resolving relative requires.
-                                    [file-dir   (and (path? source) (path-only source))])
+                                    [file-dir (and (path? source) (path-only source))])
                                (with-handlers ([exn:fail? (lambda (e)
-                                                             ;; Language require failed; try body anyway.
-                                                             (for ([form body])
-                                                               (eval-module-body-form form m-ns file-dir)))])
+                                                            ;; Language require failed; try body anyway.
+                                                            (for ([form body])
+                                                              (eval-module-body-form form m-ns file-dir)))])
                                  (namespace-require lang)
                                  (for ([form body])
                                    (eval-module-body-form form m-ns file-dir))))
@@ -250,7 +252,7 @@
         path))
 
   (define file-path (if (path? target-path) target-path (string->path target-path)))
-  (define file-dir  (path-only (path->complete-path file-path)))
+  (define file-dir (path-only (path->complete-path file-path)))
 
   (define port (open-input-file target-path))
   (port-count-lines! port)
@@ -259,7 +261,7 @@
                  ;; Set load-relative dir so (require "...") resolves
                  ;; against the file's own directory (ts-k2w).
                  [current-load-relative-directory file-dir]
-                 [current-directory               file-dir])
+                 [current-directory file-dir])
     ;; Reset output counts for standalone evaluation
     (set-box! (get-output-counts (or (path->string file-path) "repl")) (make-hash))
     (let ([ns (make-base-namespace)])
@@ -302,21 +304,21 @@
 (define (parse-string-content content uri)
   (define split-re #px"(?m:(\r?\n[ \t]*){2,})")
   (define md-start-re #px"#\\|\\s*markdown\\s*")
-  
+
   (define (process-code-blocks text start-pos start-line start-col)
     (let loop ([start 0] [current-pos start-pos] [current-line start-line] [current-col start-col])
       (define m (regexp-match-positions split-re text start))
       (define block-end (if m (caar m) (string-length text)))
       (define block-text (substring text start block-end))
       (define span (bytes-length (string->bytes/utf-8 block-text)))
-      
+
       (define-values (after-block-line after-block-col)
         (count-line-col block-text current-line current-col))
-      
+
       (when (> span 0)
         (define is-valid (block-evaluable? block-text))
         (emit-block-range current-line current-col after-block-line after-block-col span current-pos "code" is-valid))
-      
+
       (when m
         (let* ([sep-start (caar m)]
                [sep-end (cdar m)]
@@ -333,7 +335,7 @@
               [pre-md-text (substring content start pre-md-end)])
          ;; Process code before the markdown block
          (process-code-blocks pre-md-text current-pos current-line current-col)
-         
+
          (let*-values ([(md-start-line md-start-col) (count-line-col pre-md-text current-line current-col)]
                        [(md-start-pos) (+ current-pos (bytes-length (string->bytes/utf-8 pre-md-text)))]
                        [(md-content-start) (cdar m)]
@@ -365,7 +367,7 @@
   (let loop ([i 0])
     (when (< i (bytes-length bytes))
       (define b (bytes-ref bytes i))
-      (if (and (= b 37)                        ; #\%
+      (if (and (= b 37) ; #\%
                (< (+ i 2) (bytes-length bytes)))
           (let ([h1 (integer->char (bytes-ref bytes (+ i 1)))]
                 [h2 (integer->char (bytes-ref bytes (+ i 2)))])
@@ -386,55 +388,55 @@
   ;; Racket's path operations treat the string as a proper path.
   (and (string? uri)
        (string-prefix? uri "file:///")
-       (let* ([raw     (substring uri 8)]
+       (let* ([raw (substring uri 8)]
               [decoded (uri-decode raw)]
-              [native  (if (eq? 'windows (system-type 'os))
-                           (string-replace decoded "/" "\\")
-                           decoded)])
+              [native (if (eq? 'windows (system-type 'os))
+                          (string-replace decoded "/" "\\")
+                          decoded)])
          (string->path native))))
 
 (define (make-streaming-port type uri)
   (define counts-box (get-output-counts uri))
   (make-output-port
-   (symbol->string type)
-   always-evt
-   (lambda (s start end non-block? breakable?)
-     (define counts (unbox counts-box))
-     (define len (- end start))
-     (define total-written (hash-ref counts type 0))
-     (define limit (MAX-OUTPUT-SIZE))
-     (cond
-       [(>= total-written limit) len]
-       [else
-        (let* ([to-write (min len (- limit total-written))]
-               [str (bytes->string/utf-8 (subbytes s start (+ start to-write)) #\?)]
-               [truncated? (< to-write len)]
-               [final-str (if truncated? (string-append str "... [truncated]") str)])
-          (hash-set! counts type (+ total-written to-write))
-          (define msg (hash 'type "output" 'stream (symbol->string type) 'data final-str 'uri uri))
-          (displayln (jsexpr->string msg) (current-repl-output-port))
-          (flush-output (current-repl-output-port))
-          len)]))
-   void))
+    (symbol->string type)
+    always-evt
+    (lambda (s start end non-block? breakable?)
+      (define counts (unbox counts-box))
+      (define len (- end start))
+      (define total-written (hash-ref counts type 0))
+      (define limit (MAX-OUTPUT-SIZE))
+      (cond
+        [(>= total-written limit) len]
+        [else
+         (let* ([to-write (min len (- limit total-written))]
+                [str (bytes->string/utf-8 (subbytes s start (+ start to-write)) #\?)]
+                [truncated? (< to-write len)]
+                [final-str (if truncated? (string-append str "... [truncated]") str)])
+           (hash-set! counts type (+ total-written to-write))
+           (define msg (hash 'type "output" 'stream (symbol->string type) 'data final-str 'uri uri))
+           (displayln (jsexpr->string msg) (current-repl-output-port))
+           (flush-output (current-repl-output-port))
+           len)]))
+    void))
 
 (define (get-evaluator uri content)
   (hash-ref! document-evaluators uri
              (lambda ()
-                (define file-path (uri->path uri))
-                ;; Only try to get directory if we have a valid path (ts-k2w)
-                (define file-dir (and file-path 
-                                      (let ([p (path->complete-path file-path)])
-                                        (if (directory-exists? p) p (path-only p)))))
-                (define port (open-input-string content))
-                (port-count-lines! port)
-               
-               ;; read-language parses the #lang header but does NOT consume 
+               (define file-path (uri->path uri))
+               ;; Only try to get directory if we have a valid path (ts-k2w)
+               (define file-dir (and file-path
+                                     (let ([p (path->complete-path file-path)])
+                                       (if (directory-exists? p) p (path-only p)))))
+               (define port (open-input-string content))
+               (port-count-lines! port)
+
+               ;; read-language parses the #lang header but does NOT consume
                ;; the module body (unlike read-syntax).
                (define lang-spec (with-handlers ([exn:fail? (lambda (e) 'racket/base)])
                                    (parameterize ([read-accept-reader #t]
                                                   [read-accept-lang #t])
                                      (read-language port (lambda () 'racket/base)))))
-               
+
                ;; If read-language returns a procedure (the 'get-info' handler),
                ;; make-evaluator often rejects it as a 'bad language spec'.
                ;; We normalize it to a known safe module path symbol.
@@ -464,13 +466,13 @@
   (set-box! (get-output-counts (or uri "repl")) (make-hash))
 
   (define file-path (uri->path uri))
-  (define source    (or file-path uri 'repl))
+  (define source (or file-path uri 'repl))
   (define cached (cache-content! content (or uri 'repl)))
   (define port (open-input-string cached))
   (port-count-lines! port)
-  
-  ;; Consume the #lang header if present, so for-each-syntax starts at the 
-  ;; first real expression. This ensures we evaluate forms individually 
+
+  ;; Consume the #lang header if present, so for-each-syntax starts at the
+  ;; first real expression. This ensures we evaluate forms individually
   ;; even in #lang files, which is required for ts-h31.
   (parameterize ([read-accept-reader #t]
                  [read-accept-lang #t])
@@ -486,7 +488,7 @@
                                                   (display-result (make-range l (or (syntax-column stx) 0) l end-c span pos) e #:is-error #t))])
                        ;; Run expression in sandbox. Output streams directly via streaming-ports.
                        (define result (ev stx))
-                       
+
                        (define-values (end-line end-col) (get-syntax-end stx))
                        (define start-line (or (syntax-line stx) 1))
                        (define start-col (or (syntax-column stx) 0))
@@ -523,37 +525,44 @@
                  (set! current-evaluator ev)
                  (set! current-eval-thread
                        (thread
-                        (lambda ()
-                          (with-handlers ([exn:break? (lambda (e)
-                                                        (display-result (make-range 1 0 1 0 0 1) (make-exn:fail "Evaluation cancelled" (current-continuation-marks)) #:is-error #t)
+                         (lambda ()
+                           (with-handlers ([exn:break? (lambda (e)
+                                                         (display-result (make-range 1 0 1 0 0 1) (make-exn:fail "Evaluation cancelled" (current-continuation-marks)) #:is-error #t)
+                                                         (displayln "READY" (current-repl-output-port))
+                                                         (flush-output (current-repl-output-port)))]
+                                           [exn:fail? (lambda (e)
+                                                        ;; Fallback just in case
+                                                        (display-result (make-range 1 0 1 0 0 1) e #:is-error #t)
                                                         (displayln "READY" (current-repl-output-port))
-                                                        (flush-output (current-repl-output-port)))]
-                                          [exn:fail? (lambda (e)
-                                                       ;; Fallback just in case
-                                                       (display-result (make-range 1 0 1 0 0 1) e #:is-error #t)
-                                                       (displayln "READY" (current-repl-output-port))
-                                                       (flush-output (current-repl-output-port)))])
-                            (evaluate-string-content (hash-ref json-input 'content) uri ev)
-                            (displayln "READY" (current-repl-output-port))
-                            (flush-output (current-repl-output-port)))))))]
+                                                        (flush-output (current-repl-output-port)))])
+                             (evaluate-string-content (hash-ref json-input 'content) uri ev)
+                             (displayln "READY" (current-repl-output-port))
+                             (flush-output (current-repl-output-port)))))))]
               [(string=? type "cancel-evaluation")
                (when current-evaluator
                  (break-evaluator current-evaluator))]
               [(string=? type "parse")
                (set! current-parse-thread
                      (thread
-                      (lambda ()
-                        (with-handlers ([exn:fail? (lambda (e)
-                                                     (display-result (make-range 1 0 1 0 0 1) e #:is-error #t)
-                                                     (displayln "READY" (current-repl-output-port))
-                                                     (flush-output (current-repl-output-port)))])
-                          (parse-string-content (hash-ref json-input 'content) uri)
-                          (displayln "READY" (current-repl-output-port))
-                          (flush-output (current-repl-output-port))))))]
+                       (lambda ()
+                         (with-handlers ([exn:fail? (lambda (e)
+                                                      (display-result (make-range 1 0 1 0 0 1) e #:is-error #t)
+                                                      (displayln "READY" (current-repl-output-port))
+                                                      (flush-output (current-repl-output-port)))])
+                           (parse-string-content (hash-ref json-input 'content) uri)
+                           (displayln "READY" (current-repl-output-port))
+                           (flush-output (current-repl-output-port))))))]
               [(string=? type "validate-blocks")
                (validate-blocks (hash-ref json-input 'blocks))
                (displayln "READY" (current-repl-output-port))
                (flush-output (current-repl-output-port))]
+              [(string=? type "get-rich-media")
+               (let* ([id (hash-ref json-input 'id)]
+                      [data (hash-ref rich-media-cache id #f)])
+                 (define resp (hash 'type "rich-data" 'id id 'data (or data "")))
+                 (displayln (jsexpr->string resp) (current-repl-output-port))
+                 (displayln "READY" (current-repl-output-port))
+                 (flush-output (current-repl-output-port)))]
               [(string=? type "clear-namespace")
                (when uri (hash-remove! document-evaluators uri))
                (displayln "READY" (current-repl-output-port))
@@ -580,10 +589,6 @@
 
 (module+ test
   (require rackunit)
-  
-  (test-case "truncate-string"
-    (check-equal? (truncate-string "hello" 10) "hello")
-    (check-equal? (truncate-string "hello world" 5) "hello... [truncated]"))
 
   (test-case "make-range"
     (let ([r (make-range 1 2 3 4 5 6)])
@@ -622,22 +627,22 @@
 
   (test-case "LRU cache behavior"
     (reset-cache!)
-    
+
     (parameterize ([MAX-CACHE-SIZE 2])
       (cache-content! "content1" "source1")
       (cache-content! "content2" "source2")
       (check-equal? (hash-count file-content-cache) 2)
-      
+
       ;; Source1 is oldest. Adding source3 should evict source1.
       (cache-content! "content3" "source3")
       (check-equal? (hash-count file-content-cache) 2)
       (check-false (hash-has-key? file-content-cache "source1"))
       (check-true (hash-has-key? file-content-cache "source2"))
       (check-true (hash-has-key? file-content-cache "source3"))
-      
+
       ;; Access source2 to make it newer than source3
       (get-cached-content "source2")
-      
+
       ;; Now source3 is oldest. Adding source4 should evict source3.
       (cache-content! "content4" "source4")
       (check-equal? (hash-count file-content-cache) 2)
@@ -730,46 +735,46 @@
     ;; We use a thread to run the REPL and pipes to communicate with it
     (let*-values ([(in-rd in-wr) (make-pipe)]
                   [(out-port) (open-output-string)])
-      (let ([repl-thread 
+      (let ([repl-thread
              (thread
-              (lambda ()
-                (parameterize ([current-repl-output-port out-port]
-                               [current-input-port in-rd])
-                  (run-repl))))])
-        
+               (lambda ()
+                 (parameterize ([current-repl-output-port out-port]
+                                [current-input-port in-rd])
+                   (run-repl))))])
+
         ;; 1. Test successful evaluation
         (displayln "{\"type\": \"evaluate\", \"uri\": \"test-eval\", \"content\": \"(+ 1 2)\"}" in-wr)
         (flush-output in-wr)
-        
+
         ;; Wait for READY
         (let loop ([retries 20])
           (when (and (not (regexp-match? #px"READY\n" (get-output-string out-port)))
                      (> retries 0))
             (sleep 0.1)
             (loop (- retries 1))))
-        
+
         (let ([output (get-output-string out-port)])
           (check-regexp-match #px"\"result\":\"3\"" output)
           (check-regexp-match #px"READY\n" output))
-        
+
         ;; 2. Test cancellation
         ;; Use a long-running task. We need to be careful with sleep in sandbox.
         ;; Actually, let's use a simple infinite loop or long sleep if allowed.
         (displayln "{\"type\": \"evaluate\", \"uri\": \"test-cancel\", \"content\": \"(sleep 5)\"}" in-wr)
         (flush-output in-wr)
-        
+
         (sleep 0.5) ; Give it time to start
-        
+
         (displayln "{\"type\": \"cancel-evaluation\", \"uri\": \"test-cancel\"}" in-wr)
         (flush-output in-wr)
-        
+
         ;; Wait for cancellation message and READY
         (let loop ([retries 20])
           (when (and (not (regexp-match? #px"Evaluation cancelled" (get-output-string out-port)))
                      (> retries 0))
             (sleep 0.1)
             (loop (- retries 1))))
-            
+
         (let ([output (get-output-string out-port)])
           (check-regexp-match #px"Evaluation cancelled" output)
           (check-regexp-match #px"READY\n" output))

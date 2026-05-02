@@ -42,7 +42,25 @@ pub enum WorkerResult {
         uri: String,
         version: Option<i32>,
         diagnostics: Vec<Diagnostic>,
-    }
+    },
+    RichMedia {
+        id: String,
+        data: String,
+        request_id: RequestId,
+    },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRichMediaParams {
+    pub id: String,
+}
+
+pub enum PullRichMediaRequest {}
+impl lsp_types::request::Request for PullRichMediaRequest {
+    type Params = PullRichMediaParams;
+    type Result = serde_json::Value;
+    const METHOD: &'static str = "scheme/notebook/pullRichMedia";
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -270,6 +288,10 @@ impl Server {
                     self.sender.send_diagnostics(lsp_uri, diagnostics, version);
                 }
             }
+            WorkerResult::RichMedia { id: _, data, request_id } => {
+                let resp = Response::new_ok(request_id, serde_json::json!({ "data": data }));
+                let _ = self.sender.lsp_sender.send(Message::Response(resp));
+            }
         }
     }
 
@@ -280,7 +302,19 @@ impl Server {
             .on_sync_mut::<ExecuteCommand>(|id, params| self.handle_execute_command(connection, id, params))?
             .on_sync_mut::<InlayHintRequest>(|id, params| self.handle_inlay_hint(connection, id, params))?
             .on_sync_mut::<CodeLensRequest>(|id, params| self.handle_code_lens(connection, id, params))?
+            .on_sync_mut::<PullRichMediaRequest>(|id, params| self.handle_pull_rich_media(connection, id, params))?
             .finish();
+        Ok(())
+    }
+
+    fn handle_pull_rich_media(&mut self, _connection: &lsp_server::Connection, id: RequestId, params: PullRichMediaParams) -> Result<(), Box<dyn Error + Sync + Send>> {
+        self.eval_tx.send(EvalTask {
+            uri: "repl".to_string(),
+            action: EvalAction::PullRichMedia {
+                id: params.id,
+                request_id: id,
+            },
+        })?;
         Ok(())
     }
 

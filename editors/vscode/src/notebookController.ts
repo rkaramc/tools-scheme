@@ -149,17 +149,31 @@ export class SchemeNotebookController {
             try {
                 // Determine correct mime type
                 const mime = payload.mime || 'image/png';
-                if (mime === 'image/png') {
-                    const buf = Buffer.from(payload.data, 'base64');
-                    outputItem = new vscode.NotebookCellOutputItem(buf, mime);
-                } else {
-                    // Fallback to text
-                    outputItem = vscode.NotebookCellOutputItem.text(payload.data, mime);
+
+                    let data = payload.data;
+                    if (payload.id) {
+                        // Pull model: Request data from LSP
+                        const c = this.client();
+                        if (c) {
+                            const response = await c.sendRequest<{ data: string }>('scheme/notebook/pullRichMedia', { id: payload.id });
+                            data = response.data;
+                        }
+                    }
+
+                if (data) {
+                    if (mime === 'image/png') {
+                        const buf = Buffer.from(data, 'base64');
+                        outputItem = new vscode.NotebookCellOutputItem(buf, mime);
+                    } else {
+                        // Fallback to text
+                        outputItem = vscode.NotebookCellOutputItem.text(data, mime);
+                    }
                 }
             } catch (err) {
                 outputItem = vscode.NotebookCellOutputItem.error(err as Error);
             }
         } else if (payload.type === 'error') {
+
             outputItem = vscode.NotebookCellOutputItem.error({
                 name: 'Evaluation Error',
                 message: payload.data
