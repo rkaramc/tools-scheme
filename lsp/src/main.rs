@@ -35,11 +35,17 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     })?;
 
     let initialization_params = connection.initialize(server_capabilities)?;
-    let racket_path = initialization_params
-        .get("initializationOptions")
+    let initialization_options = initialization_params.get("initializationOptions");
+    
+    let racket_path = initialization_options
         .and_then(|opts| opts.get("racketPath"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+
+    let disable_diagnostics = initialization_options
+        .and_then(|opts| opts.get("disableDiagnostics"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let evaluator = Evaluator::new(racket_path.clone())
         .map_err(|e| {
@@ -72,7 +78,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let (diag_tx, diag_rx) = crossbeam_channel::unbounded();
     let diag_lsp_sender = connection.sender.clone();
     let diag_worker_handle = std::thread::spawn(move || {
-        diagnostic_worker(diag_rx, diag_lsp_sender);
+        diagnostic_worker(diag_rx, diag_lsp_sender, disable_diagnostics);
     });
 
     // Spawn the eval worker. It owns the Evaluator (and thus the Racket REPL

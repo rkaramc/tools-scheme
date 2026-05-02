@@ -246,12 +246,16 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(handleCustomExtensions());
 
-  // Watch for configuration changes to restart client if extensions change
+  // Watch for configuration changes to restart client if settings change
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("scheme.customFileExtensions")) {
+      if (
+        e.affectsConfiguration("scheme.customFileExtensions") ||
+        e.affectsConfiguration("scheme.disableDiagnostics") ||
+        e.affectsConfiguration("scheme.racketPath")
+      ) {
         outputChannel.appendLine(
-          "Custom file extensions changed. Restarting LSP client...",
+          "Scheme settings changed. Restarting LSP client...",
         );
         restartClient(context);
       }
@@ -306,6 +310,7 @@ function startClient(context: vscode.ExtensionContext) {
     },
     initializationOptions: {
       racketPath: config.get<string>("racketPath"),
+      disableDiagnostics: config.get<boolean>("disableDiagnostics"),
     },
     outputChannel: outputChannel,
     middleware: {

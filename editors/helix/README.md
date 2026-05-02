@@ -66,6 +66,14 @@ name = "racket"
 language-servers = [ "scheme-toolbox-lsp" ]
 ```
 
+### Suppressing Redundant Diagnostics
+If you keep both servers enabled, you can disable diagnostic publishing in `scheme-toolbox-lsp` to avoid duplicate error markers:
+
+```toml
+[language-server.scheme-toolbox-lsp.config]
+disableDiagnostics = true
+```
+
 ## Troubleshooting
 If inlay hints are not appearing, ensure they are enabled in your Helix `config.toml`:
 

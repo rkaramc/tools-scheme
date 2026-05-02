@@ -56,7 +56,13 @@ impl MessageSender for DiagnosticWorkerSender {
 pub fn diagnostic_worker(
     rx: crossbeam_channel::Receiver<DiagnosticTask>,
     sender: crossbeam_channel::Sender<Message>,
+    disable_diagnostics: bool,
 ) {
+    if disable_diagnostics {
+        for _ in rx {}
+        return;
+    }
+
     let mut pending: std::collections::HashMap<lsp_types::Uri, DiagnosticTask> = std::collections::HashMap::new();
     let is_test = std::env::var("TOOLS_SCHEME_TEST").is_ok();
     let debounce_ms = if is_test { 0 } else { 200 };
@@ -396,9 +402,32 @@ pub fn recalculate_from_byte_pos(results: &mut [EvalResult], text: &str, line_in
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evaluator::EvalResult;
     use std::time::Duration;
     use std::str::FromStr;
+
+    #[test]
+    fn test_diagnostic_worker_disabled() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let (lsp_tx, lsp_rx) = crossbeam_channel::unbounded();
+        
+        let _handle = std::thread::spawn(move || {
+            diagnostic_worker(rx, lsp_tx, true);
+        });
+
+        let uri = lsp_types::Uri::from_str("file:///test.rkt").unwrap();
+        
+        tx.send(DiagnosticTask { 
+            uri: uri.clone(), 
+            diagnostics: vec![Diagnostic { message: "error 1".to_string(), ..Default::default() }],
+            version: Some(1)
+        }).unwrap();
+
+        // Wait a bit
+        std::thread::sleep(Duration::from_millis(100));
+        
+        // Should NOT have received any message
+        assert!(lsp_rx.try_recv().is_err(), "Should NOT have received any message when disabled");
+    }
 
     #[test]
     fn test_diagnostic_worker_debounce() {
@@ -406,7 +435,7 @@ mod tests {
         let (lsp_tx, lsp_rx) = crossbeam_channel::unbounded();
         
         let _handle = std::thread::spawn(move || {
-            diagnostic_worker(rx, lsp_tx);
+            diagnostic_worker(rx, lsp_tx, false);
         });
 
         let uri = lsp_types::Uri::from_str("file:///test.rkt").unwrap();
@@ -453,7 +482,7 @@ mod tests {
         let (lsp_tx, lsp_rx) = crossbeam_channel::unbounded();
         
         let _handle = std::thread::spawn(move || {
-            diagnostic_worker(rx, lsp_tx);
+            diagnostic_worker(rx, lsp_tx, false);
         });
 
         let uri = lsp_types::Uri::from_str("file:///test.rkt").unwrap();
@@ -488,7 +517,7 @@ mod tests {
         let (lsp_tx, lsp_rx) = crossbeam_channel::unbounded();
         
         let _handle = std::thread::spawn(move || {
-            diagnostic_worker(rx, lsp_tx);
+            diagnostic_worker(rx, lsp_tx, false);
         });
 
         let uri = lsp_types::Uri::from_str("file:///test.rkt").unwrap();
