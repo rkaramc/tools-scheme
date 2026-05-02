@@ -1,0 +1,24 @@
+[language-server.scheme-toolbox-lsp]
+command = "scheme-toolbox-lsp"
+
+[language-server.racket-langserver]
+command = "racket"
+args = ["-l", "racket-langserver"]
+
+[[language]]
+name = "racket"
+scope = "source.rkt"
+injection-regex = "racket"
+file-types = ["rkt", "rktd", "rktl", "rktnb"]
+shebangs = ["racket"]
+comment-token = ";"
+language-servers = [ "scheme-toolbox-lsp", "racket-langserver" ]
+
+[[language]]
+name = "scheme"
+scope = "source.scm"
+injection-regex = "scheme"
+file-types = ["scm", "ss", "scmnb"]
+shebangs = ["guile", "racket", "scheme"]
+comment-token = ";"
+language-servers = [ "scheme-toolbox-lsp" ]
