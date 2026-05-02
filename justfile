@@ -8,7 +8,7 @@ set windows-shell := ["pwsh", "-NoProfile", "-Command"]
 os := os()
 exe := if os == "windows" { ".exe" } else { "" }
 lsp_binary := "target/release/scheme-toolbox-lsp" + exe
-tmp_dir_base := justfile_directory() + "/tmp"
+tmp_dir_base := parent_directory(justfile_directory()) + "/temp/tmp-tools-scheme"
 tmp_dir := if os == "windows" { replace(tmp_dir_base, "/", "\\") } else { tmp_dir_base }
 
 export TOOLS_SCHEME_TMP_DIR := tmp_dir
@@ -93,8 +93,8 @@ test target="all" *args:
     @just _test-{{target}} {{args}}
 
 # Run all test suites
-_test-all *args:
-    @just clean
+_test-all *args: _ensure-tmp
+    @just clean-test-outputs
     @just debug
     @just _test-lsp {{args}}
     @just _test-vscode {{args}}
@@ -102,41 +102,41 @@ _test-all *args:
     @just _test-integration -- --test-threads=1 {{args}}
 
 # Run tests for LSP (Rust)
-_test-lsp *args: _ensure-tmp
+_test-lsp *args:
     echo ">>> Testing LSP (Rust+Cargo)"
     cd lsp && cargo test {{args}} -- --test-threads=1 >> {{tmp_dir}}/test-output.txt 2>&1
 
 # Run specifically integration tests for LSP
-test-lsp-integration *args: _ensure-tmp
+test-lsp-integration *args: 
     echo ">>> Testing LSP Integration (Sequential)"
     cd lsp && cargo test --test integration -- --test-threads=1 {{args}} >> {{tmp_dir}}/test-output.txt 2>&1
 
 # Run specifically windows tests for LSP
-test-lsp-windows *args: _ensure-tmp
+test-lsp-windows *args: 
     echo ">>> Testing LSP Windows Specifics"
     cd lsp && cargo test --test windows_test {{args}} >> {{tmp_dir}}/test-output.txt 2>&1
 
 # Run tests for VSCode extension (Typescript+Jest)
-_test-vscode *args: _ensure-tmp
+_test-vscode *args: 
     echo ">>> Testing VSCode Extension (TypeScript)"
     cd editors/vscode && npm test {{args}} >> {{tmp_dir}}/test-output.txt 2>&1
 
 # Run tests for Racket eval-shim (Racket+RacoTest)
-_test-racket *args: _ensure-tmp
+_test-racket *args: 
     echo ">>> Testing Eval-shim (Racket)"
     raco test lsp/src/eval-shim.rkt {{args}} >> {{tmp_dir}}/test-output.txt 2>&1
 
 # Run integrations tests on VSCode (VSCode + extension host + Mocha) (requires VS Code to be installed)
-_test-integration *args: _ensure-tmp
+_test-integration *args: 
     echo ">>> Testing Integration with VS Code"
     cd editors/vscode && npm run test-integration {{args}} >> {{tmp_dir}}/test-output.txt 2>&1
 
 # Clean project outputs
 clean:
-    @just _clean-test-outputs
+    @just clean-test-outputs
     cargo clean
 
 # Clean test outputs
-_clean-test-outputs:
+clean-test-outputs:
     echo ">>> Clean test outputs"
-    {{ if os == "windows" { "if (Test-Path '" + tmp_dir + "') { Get-ChildItem -Path '" + tmp_dir + "' -Exclude 'test-output*.txt' | Remove-Item -Recurse -Force }" } else { "find '" + tmp_dir + "' -mindepth 1 ! -name 'test-output*.txt' -exec rm -rf {} +" } }}
+    {{ if os == "windows" { "if (Test-Path '" + tmp_dir + "') { Get-ChildItem -Path '" + tmp_dir + "' -Exclude 'test-output*.txt' | Remove-Item -Recurse -Force }; Get-ChildItem lsp/test_*.global.session.txt -ErrorAction SilentlyContinue | Remove-Item -Force" } else { "find '" + tmp_dir + "' -mindepth 1 ! -name 'test-output*.txt' -exec rm -rf {} +; rm -f lsp/test_*.global.session.txt" } }}

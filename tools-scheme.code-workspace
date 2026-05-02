@@ -1,14 +1,17 @@
 {
-	"folders": [
-		{
-			"path": "."
-		},
-		{
-			"path": "editors/vscode"
-		},
-		{
-			"path": "../learn-scheme/little-schemer"
-		}
-	],
-	"settings": {}
+  "folders": [
+    {
+      "path": ".",
+    },
+    {
+      "path": "editors/vscode",
+    },
+    {
+      "path": "../learn-scheme/little-schemer",
+    },
+    {
+      "path": "../temp/tmp-tools-scheme",
+    },
+  ],
+  "settings": {},
 }
