@@ -568,7 +568,7 @@
                (displayln "READY" (current-repl-output-port))
                (flush-output (current-repl-output-port))]
               [else
-               (eprintf "Unknown REPL command type: ~a\n" type)
+               (displayln (format "Unknown REPL command type: ~a" type) (current-repl-output-port))
                (displayln "READY" (current-repl-output-port))
                (flush-output (current-repl-output-port))])))
         (loop)))))
@@ -682,6 +682,16 @@
         (check-regexp-match #px"READY\n" output)))
     ;; Reset error handling for next tests
     (void))
+
+  (test-case "REPL unknown command"
+    (let* ([in-port (open-input-string "{\"type\": \"unknown\", \"uri\": \"test\"}\n")]
+           [out-port (open-output-string)])
+      (parameterize ([current-repl-output-port out-port]
+                     [current-input-port in-port])
+        (run-repl))
+      (let ([output (get-output-string out-port)])
+        (check-regexp-match #px"Unknown REPL command type: unknown" output)
+        (check-regexp-match #px"READY\n" output))))
 
   (test-case "REPL clear-namespace"
     (let* ([in-port (open-input-string "{\"type\": \"clear-namespace\", \"uri\": \"test-uri\"}\n")]
