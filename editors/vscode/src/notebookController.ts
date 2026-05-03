@@ -97,91 +97,102 @@ export class SchemeNotebookController {
      * Handle incoming output streams from the LSP.
      */
     public async handleOutputStream(params: any): Promise<void> {
-        const payload = params.payload;
         const executionId = params.executionId;
-
-        // Find the execution matching this ID
-        let targetExecution: vscode.NotebookCellExecution | undefined;
-        for (const exec of this._activeExecutions.values()) {
-            if (exec.executionOrder === executionId) {
-                targetExecution = exec;
-                break;
-            }
-        }
-
+        const targetExecution = this._findExecution(executionId);
         if (!targetExecution) return;
 
+        const payload = params.payload;
         if (payload.type === 'stdout' || payload.type === 'stderr') {
-            const isStdout = payload.type === 'stdout';
-            const mime = isStdout ? 'application/vnd.code.notebook.stdout' : 'application/vnd.code.notebook.stderr';
-
-            const cell = targetExecution.cell;
-            const outputs = cell.outputs;
-            const lastOutput = outputs.length > 0 ? outputs[outputs.length - 1] : undefined;
-
-            if (lastOutput) {
-                const existingItem = lastOutput.items.find(item => item.mime === mime);
-                if (existingItem) {
-                    const currentData = Buffer.from(existingItem.data).toString('utf8');
-                    const newData = currentData + payload.data;
-                    const newItem = isStdout 
-                        ? vscode.NotebookCellOutputItem.stdout(newData) 
-                        : vscode.NotebookCellOutputItem.stderr(newData);
-                    
-                    const newItems = lastOutput.items.map(item => item.mime === mime ? newItem : item);
-                    await targetExecution.replaceOutputItems(newItems, lastOutput);
-                    return;
-                }
-            }
-
-            const item = isStdout 
-                ? vscode.NotebookCellOutputItem.stdout(payload.data) 
-                : vscode.NotebookCellOutputItem.stderr(payload.data);
-            await targetExecution.appendOutput(new vscode.NotebookCellOutput([item]));
+            await this._appendStreamOutput(targetExecution, payload);
             return;
         }
 
-        let outputItem: vscode.NotebookCellOutputItem | undefined;
+        const outputItem = await this._createOutputItem(payload);
+        if (outputItem) {
+            await targetExecution.appendOutput(new vscode.NotebookCellOutput([outputItem]));
+        }
+    }
 
-        if (payload.type === 'result') {
-            outputItem = vscode.NotebookCellOutputItem.text(payload.data);
-        } else if (payload.type === 'rich') {
-            try {
-                // Determine correct mime type
-                const mime = payload.mime || 'image/png';
-
-                    let data = payload.data;
-                    if (payload.id) {
-                        // Pull model: Request data from LSP
-                        const c = this.client();
-                        if (c) {
-                            const response = await c.sendRequest<{ data: string }>('scheme/notebook/pullRichMedia', { id: payload.id });
-                            data = response.data;
-                        }
-                    }
-
-                if (data) {
-                    if (mime === 'image/png') {
-                        const buf = Buffer.from(data, 'base64');
-                        outputItem = new vscode.NotebookCellOutputItem(buf, mime);
-                    } else {
-                        // Fallback to text
-                        outputItem = vscode.NotebookCellOutputItem.text(data, mime);
-                    }
-                }
-            } catch (err) {
-                outputItem = vscode.NotebookCellOutputItem.error(err as Error);
+    private _findExecution(executionId: number): vscode.NotebookCellExecution | undefined {
+        for (const exec of this._activeExecutions.values()) {
+            if (exec.executionOrder === executionId) {
+                return exec;
             }
-        } else if (payload.type === 'error') {
+        }
+        return undefined;
+    }
 
-            outputItem = vscode.NotebookCellOutputItem.error({
+    private async _appendStreamOutput(execution: vscode.NotebookCellExecution, payload: any): Promise<void> {
+        const isStdout = payload.type === 'stdout';
+        const mime = isStdout ? 'application/vnd.code.notebook.stdout' : 'application/vnd.code.notebook.stderr';
+
+        const cell = execution.cell;
+        const outputs = cell.outputs;
+        const lastOutput = outputs.length > 0 ? outputs[outputs.length - 1] : undefined;
+
+        if (lastOutput) {
+            const existingItem = lastOutput.items.find(item => item.mime === mime);
+            if (existingItem) {
+                const currentData = Buffer.from(existingItem.data).toString('utf8');
+                const newData = currentData + payload.data;
+                const newItem = isStdout 
+                    ? vscode.NotebookCellOutputItem.stdout(newData) 
+                    : vscode.NotebookCellOutputItem.stderr(newData);
+                
+                const newItems = lastOutput.items.map(item => item.mime === mime ? newItem : item);
+                await execution.replaceOutputItems(newItems, lastOutput);
+                return;
+            }
+        }
+
+        const item = isStdout 
+            ? vscode.NotebookCellOutputItem.stdout(payload.data) 
+            : vscode.NotebookCellOutputItem.stderr(payload.data);
+        await execution.appendOutput(new vscode.NotebookCellOutput([item]));
+    }
+
+    private async _createOutputItem(payload: any): Promise<vscode.NotebookCellOutputItem | undefined> {
+        if (payload.type === 'result') {
+            return vscode.NotebookCellOutputItem.text(payload.data);
+        }
+
+        if (payload.type === 'rich') {
+            return this._handleRichPayload(payload);
+        }
+
+        if (payload.type === 'error') {
+            return vscode.NotebookCellOutputItem.error({
                 name: 'Evaluation Error',
                 message: payload.data
             });
         }
 
-        if (outputItem) {
-            await targetExecution.appendOutput(new vscode.NotebookCellOutput([outputItem]));
+        return undefined;
+    }
+
+    private async _handleRichPayload(payload: any): Promise<vscode.NotebookCellOutputItem | undefined> {
+        try {
+            const mime = payload.mime || 'image/png';
+            let data = payload.data;
+
+            if (payload.id) {
+                const c = this.client();
+                if (c) {
+                    const response = await c.sendRequest<{ data: string }>('scheme/notebook/pullRichMedia', { id: payload.id });
+                    data = response.data;
+                }
+            }
+
+            if (!data) return undefined;
+
+            if (mime === 'image/png') {
+                const buf = Buffer.from(data, 'base64');
+                return new vscode.NotebookCellOutputItem(buf, mime);
+            }
+            
+            return vscode.NotebookCellOutputItem.text(data, mime);
+        } catch (err) {
+            return vscode.NotebookCellOutputItem.error(err as Error);
         }
     }
 

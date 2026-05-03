@@ -83,41 +83,9 @@ export function activate(context: vscode.ExtensionContext) {
   const evaluateCommand = vscode.commands.registerCommand(
     "scheme.runEvaluation",
     async (uriOrArgs: any) => {
-      outputChannel.appendLine(
-        `Triggering evaluation for: ${JSON.stringify(uriOrArgs)}`,
-      );
-
-      let uri: string;
-      if (typeof uriOrArgs === "string") {
-        uri = uriOrArgs;
-      } else if (uriOrArgs instanceof vscode.Uri) {
-        uri = uriOrArgs.toString();
-      } else {
-        const activeEditor = vscode.window.activeTextEditor;
-        if (activeEditor) {
-          uri = activeEditor.document.uri.toString();
-        } else {
-          vscode.window.showErrorMessage("No active editor to evaluate.");
-          return;
-        }
-      }
-
-      if (!client) {
-        vscode.window.showErrorMessage("LSP Client not initialized.");
-        return;
-      }
-
-      try {
-        const result = await client.sendRequest("workspace/executeCommand", {
-          command: "scheme.evaluate",
-          arguments: [uri],
-        });
-        outputChannel.appendLine(
-          `Evaluation command completed. Results:\n${JSON.stringify(result, null, 2)}`,
-        );
-      } catch (err) {
-        outputChannel.appendLine(`Evaluation failed: ${err}`);
-        vscode.window.showErrorMessage(`Evaluation failed: ${err}`);
+      const uri = resolveUri(uriOrArgs);
+      if (uri) {
+        await executeLspCommand("scheme.evaluate", [uri]);
       }
     },
   );
@@ -142,54 +110,20 @@ export function activate(context: vscode.ExtensionContext) {
       const selectedText = activeEditor.document.getText(selection);
       const uri = activeEditor.document.uri.toString();
 
-      outputChannel.appendLine(`Triggering selection evaluation for: ${uri}`);
-
-      if (!client) {
-        vscode.window.showErrorMessage("LSP Client not initialized.");
-        return;
-      }
-
-      try {
-        const result = await client.sendRequest("workspace/executeCommand", {
-          command: "scheme.evaluateSelection",
-          arguments: [
-            uri,
-            selectedText,
-            {
-              start: selection.start,
-              end: selection.end,
-            },
-          ],
-        });
-        outputChannel.appendLine(
-          `Evaluate selection command completed. Results:\n${JSON.stringify(result, null, 2)}`,
-        );
-      } catch (err) {
-        outputChannel.appendLine(`Evaluate selection failed: ${err}`);
-        vscode.window.showErrorMessage(`Evaluate selection failed: ${err}`);
-      }
+      await executeLspCommand("scheme.evaluateSelection", [
+        uri,
+        selectedText,
+        {
+          start: selection.start,
+          end: selection.end,
+        },
+      ]);
     },
   );
 
   const restartREPLCommand = vscode.commands.registerCommand(
     "scheme.restartREPL",
-    async () => {
-      if (!client) {
-        vscode.window.showErrorMessage("LSP Client not initialized.");
-        return;
-      }
-
-      try {
-        await client.sendRequest("workspace/executeCommand", {
-          command: "scheme.restartREPL",
-          arguments: [],
-        });
-        vscode.window.showInformationMessage("Racket restarted.");
-      } catch (err) {
-        outputChannel.appendLine(`Restart Racket failed: ${err}`);
-        vscode.window.showErrorMessage(`Failed to restart Racket: ${err}`);
-      }
-    },
+    () => executeLspCommand("scheme.restartREPL", [], "Racket restarted."),
   );
 
   const clearNamespaceCommand = vscode.commands.registerCommand(
@@ -200,24 +134,8 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showErrorMessage("No active editor to reset file for.");
         return;
       }
-
       const uri = activeEditor.document.uri.toString();
-
-      if (!client) {
-        vscode.window.showErrorMessage("LSP Client not initialized.");
-        return;
-      }
-
-      try {
-        await client.sendRequest("workspace/executeCommand", {
-          command: "scheme.clearNamespace",
-          arguments: [uri],
-        });
-        vscode.window.showInformationMessage("File reset.");
-      } catch (err) {
-        outputChannel.appendLine(`Reset File failed: ${err}`);
-        vscode.window.showErrorMessage(`Failed to reset file: ${err}`);
-      }
+      await executeLspCommand("scheme.clearNamespace", [uri], "File reset.");
     },
   );
 
@@ -261,6 +179,45 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
   );
+}
+
+function resolveUri(uriOrArgs: any): string | undefined {
+  if (typeof uriOrArgs === "string") return uriOrArgs;
+  if (uriOrArgs instanceof vscode.Uri) return uriOrArgs.toString();
+
+  const activeEditor = vscode.window.activeTextEditor;
+  if (activeEditor) return activeEditor.document.uri.toString();
+
+  vscode.window.showErrorMessage("No active editor or URI provided.");
+  return undefined;
+}
+
+async function executeLspCommand(
+  command: string,
+  args: any[],
+  successMsg?: string,
+) {
+  if (!client) {
+    vscode.window.showErrorMessage("LSP Client not initialized.");
+    return;
+  }
+
+  try {
+    const result = await client.sendRequest("workspace/executeCommand", {
+      command,
+      arguments: args,
+    });
+    if (successMsg) {
+      vscode.window.showInformationMessage(successMsg);
+    }
+    outputChannel.appendLine(
+      `${command} completed. Results:\n${JSON.stringify(result, null, 2)}`,
+    );
+    return result;
+  } catch (err) {
+    outputChannel.appendLine(`${command} failed: ${err}`);
+    vscode.window.showErrorMessage(`${command} failed: ${err}`);
+  }
 }
 
 function startClient(context: vscode.ExtensionContext) {

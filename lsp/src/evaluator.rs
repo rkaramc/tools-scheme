@@ -402,6 +402,43 @@ impl Evaluator {
         })
     }
 
+    fn write_to_log(&mut self, log_file: Option<&File>, msg: &str) -> Result<()> {
+        match log_file {
+            Some(file) => {
+                let mut f = file;
+                writeln!(f, "{}", msg)?;
+                f.flush()?;
+            }
+            None => {
+                writeln!(&mut self.global_session, "{}", msg)?;
+                self.global_session.flush()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn send_command_json<T, F>(
+        &mut self,
+        req: &serde_json::Value,
+        cancel_info: Option<(&crossbeam_channel::Receiver<u32>, u32, &str)>,
+        log_file: Option<&File>,
+        mut map: F,
+    ) -> Result<Vec<T>>
+    where
+        F: FnMut(serde_json::Value) -> Option<T>,
+    {
+        let mut results = Vec::new();
+        self.send_command(req, cancel_info, log_file, |buffer| {
+            let trimmed = buffer.trim();
+            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if let Some(res) = map(json_val) {
+                    results.push(res);
+                }
+            }
+        })?;
+        Ok(results)
+    }
+
     fn ensure_alive(&mut self) -> Result<&mut ProcessState> {
         let needs_restart = match &mut self.state {
             Some(state) => match state.child.try_wait() {
@@ -568,13 +605,7 @@ impl Evaluator {
 
             on_line(&buffer);
 
-            if let Some(mut file) = log_file {
-                let _ = writeln!(file, "{}", buffer);
-                let _ = file.flush();
-            } else {
-                let _ = writeln!(&mut self.global_session, "{}", buffer);
-                let _ = self.global_session.flush();
-            }
+            let _ = self.write_to_log(log_file, &buffer);
         }
 
         Ok(())
@@ -598,22 +629,9 @@ impl Evaluator {
         log: Option<&File>,
     ) -> Result<Vec<EvalResult>> {
         let label = context_label.or(uri).unwrap_or("UNKNOWN");
-
-        if let Some(mut file) = log {
-            writeln!(
-                file,
-                "\n--- EVAL INPUT ({}) ---\n{}\n--- EVAL OUTPUT ---",
-                label, content
-            )?;
-            file.flush()?;
-        } else {
-            writeln!(
-                &mut self.global_session,
-                "\n--- EVAL INPUT NO LOG ({}) ---\n{}\n--- EVAL OUTPUT ---",
-                label, content
-            )?;
-            self.global_session.flush()?;
-        }
+        let header = if log.is_some() { "EVAL INPUT" } else { "EVAL INPUT NO LOG" };
+        let log_msg = format!("\n--- {} ({}) ---\n{}\n--- EVAL OUTPUT ---", header, label, content);
+        self.write_to_log(log, &log_msg)?;
 
         let req = serde_json::json!({
             "type": "evaluate",
@@ -621,16 +639,9 @@ impl Evaluator {
             "uri": uri
         });
 
-        let mut results = Vec::new();
-
-        self.send_command(&req, None, log, |buffer| {
-            let trimmed = buffer.trim();
-            if let Ok(res) = serde_json::from_str::<EvalResult>(trimmed) {
-                results.push(res);
-            }
-        })?;
-
-        Ok(results)
+        self.send_command_json(&req, None, log, |json_val| {
+            serde_json::from_value::<EvalResult>(json_val).ok()
+        })
     }
 
     pub fn parse(&mut self, content: &str, uri: Option<&str>) -> Result<Vec<RangeResult>> {
@@ -640,33 +651,19 @@ impl Evaluator {
             "uri": uri
         });
 
-        let mut results = Vec::new();
-        self.send_command(&req, None, None, |trimmed| {
-            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if json_val.get("type").and_then(|v| v.as_str()) == Some("range") {
-                    if let Ok(res) = serde_json::from_value::<RangeResult>(json_val) {
-                        results.push(res);
-                    }
-                }
+        self.send_command_json(&req, None, None, |json_val| {
+            if json_val.get("type").and_then(|v| v.as_str()) == Some("range") {
+                serde_json::from_value::<RangeResult>(json_val).ok()
+            } else {
+                None
             }
-        })?;
-
-        Ok(results)
+        })
     }
 
     #[allow(unused)]
     pub fn clear_namespace(&mut self, uri: &str, log: Option<&File>) -> Result<()> {
-        if let Some(mut file) = log {
-            writeln!(file, "\n--- SYSTEM COMMAND: clear-namespace ({}) ---", uri)?;
-            file.flush()?;
-        } else {
-            writeln!(
-                &mut self.global_session,
-                "\n--- SYSTEM COMMAND: clear-namespace ({}) ---",
-                uri
-            )?;
-            self.global_session.flush()?;
-        }
+        let log_msg = format!("\n--- SYSTEM COMMAND: clear-namespace ({}) ---", uri);
+        self.write_to_log(log, &log_msg)?;
 
         let req = serde_json::json!({
             "type": "clear-namespace",
@@ -682,15 +679,13 @@ impl Evaluator {
         });
 
         let mut data = String::new();
-        self.send_command(&req, None, log, |trimmed| {
-            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if json_val.get("type").and_then(|v| v.as_str()) == Some("rich-data") {
-                    if let Some(d) = json_val.get("data").and_then(|v| v.as_str()) {
-                        data = d.to_string();
-                    }
-                }
+        self.send_command_json(&req, None, log, |json_val| {
+            if json_val.get("type").and_then(|v| v.as_str()) == Some("rich-data") {
+                json_val.get("data").and_then(|v| v.as_str()).map(|s| s.to_string())
+            } else {
+                None
             }
-        })?;
+        })?.into_iter().for_each(|d| data = d);
 
         Ok(data)
     }
@@ -700,21 +695,8 @@ impl Evaluator {
         blocks: Vec<String>,
         log: Option<&File>,
     ) -> Result<Vec<bool>> {
-        if let Some(mut file) = log {
-            writeln!(
-                file,
-                "\n--- SYSTEM COMMAND: validate-blocks ({} blocks) ---",
-                blocks.len()
-            )?;
-            file.flush()?;
-        } else {
-            writeln!(
-                &mut self.global_session,
-                "\n--- SYSTEM COMMAND: validate-blocks ({} blocks) ---",
-                blocks.len()
-            )?;
-            self.global_session.flush()?;
-        }
+        let log_msg = format!("\n--- SYSTEM COMMAND: validate-blocks ({} blocks) ---", blocks.len());
+        self.write_to_log(log, &log_msg)?;
 
         let req = serde_json::json!({
             "type": "validate-blocks",
@@ -722,22 +704,19 @@ impl Evaluator {
         });
 
         let mut results = vec![false; blocks.len()];
-
-        self.send_command(&req, None, log, |trimmed| {
-            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if json_val.get("type").and_then(|v| v.as_str()) == Some("validation") {
-                    let index =
-                        json_val.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                    let valid = json_val
-                        .get("valid")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    if index < results.len() {
-                        results[index] = valid;
-                    }
-                }
+        self.send_command_json(&req, None, log, |json_val| {
+            if json_val.get("type").and_then(|v| v.as_str()) == Some("validation") {
+                let index = json_val.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let valid = json_val.get("valid").and_then(|v| v.as_bool()).unwrap_or(false);
+                Some((index, valid))
+            } else {
+                None
             }
-        })?;
+        })?.into_iter().for_each(|(index, valid)| {
+            if index < results.len() {
+                results[index] = valid;
+            }
+        });
 
         Ok(results)
     }
@@ -753,12 +732,8 @@ impl Evaluator {
     where
         F: FnMut(&str),
     {
-        writeln!(
-            &mut self.global_session,
-            "\n--- EVAL CELL INPUT NO LOG ({}) ---\n{}\n--- EVAL CELL OUTPUT ---",
-            uri, content
-        )?;
-        self.global_session.flush()?;
+        let log_msg = format!("\n--- EVAL CELL INPUT NO LOG ({}) ---\n{}\n--- EVAL CELL OUTPUT ---", uri, content);
+        self.write_to_log(None, &log_msg)?;
 
         let req = serde_json::json!({
             "type": "evaluate",

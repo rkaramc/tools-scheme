@@ -160,18 +160,24 @@ impl Server {
         Ok(LoopAction::Continue)
     }
 
-    fn handle_worker_result(&mut self, result: WorkerResult) {
+    fn send_diagnostics(&self, uri: &str, diagnostics: Vec<Diagnostic>, version: Option<i32>) {
+        use crate::worker::MessageSender;
+        if let Ok(lsp_uri) = lsp_types::Uri::from_str(uri) {
+            self.sender.send_diagnostics(lsp_uri, diagnostics, version);
+        }
+    }
+
+    pub fn handle_worker_result(&mut self, res: WorkerResult) {
         use crate::worker::MessageSender;
         use lsp_types::{DiagnosticSeverity, Position};
 
-        match result {
+        match res {
             WorkerResult::EvaluateComplete { uri, version, results, byte_range } => {
                 if let Some(doc) = self.document_store.get_mut(&uri) {
                     if doc.version <= version.unwrap_or(0) {
                         merge_results(&mut doc.results, results, byte_range);
                         
-                        // Build COMPOSITE diagnostics from the full results list
-                        let composite_diagnostics: Vec<Diagnostic> = doc.results
+                        let diagnostics: Vec<Diagnostic> = doc.results
                             .iter()
                             .filter(|r| r.is_error)
                             .map(|res| {
@@ -197,9 +203,7 @@ impl Server {
                             })
                             .collect();
 
-                        if let Ok(lsp_uri) = lsp_types::Uri::from_str(&uri) {
-                            self.sender.send_diagnostics(lsp_uri, composite_diagnostics, version);
-                        }
+                        self.send_diagnostics(&uri, diagnostics, version);
                         self.sender.refresh_inlay_hints();
                     }
                 } else {
@@ -230,14 +234,11 @@ impl Server {
                         })
                         .collect();
 
-                    if let Ok(lsp_uri) = lsp_types::Uri::from_str(&uri) {
-                        self.sender.send_diagnostics(lsp_uri, diagnostics, version);
-                    }
+                    self.send_diagnostics(&uri, diagnostics, version);
                     self.sender.refresh_inlay_hints();
                 }
             }
             WorkerResult::ParseComplete { uri, version, ranges } => {
-                // eprintln!("Gateway: Received ParseComplete for {} version {}", uri, version);
                 if let Some(doc) = self.document_store.get_mut(&uri) {
                     if doc.version <= version {
                         doc.ranges = ranges;
@@ -246,12 +247,9 @@ impl Server {
                 }
             }
             WorkerResult::ClearNamespace { uri } => {
-                // eprintln!("Gateway: Received ClearNamespace for {}", uri);
                 if let Some(doc) = self.document_store.get_mut(&uri) {
                     doc.results.clear();
-                    if let Ok(lsp_uri) = lsp_types::Uri::from_str(&uri) {
-                        self.sender.send_diagnostics(lsp_uri, Vec::new(), None);
-                    }
+                    self.send_diagnostics(&uri, Vec::new(), None);
                     self.sender.refresh_inlay_hints();
                     self.sender.refresh_code_lenses();
                 }
@@ -264,29 +262,22 @@ impl Server {
                     if let Some(doc) = self.document_store.get_mut(&uri) {
                         doc.results.clear();
                         doc.ranges.clear();
-                        if let Ok(lsp_uri) = lsp_types::Uri::from_str(&uri) {
-                            self.sender.send_diagnostics(lsp_uri, Vec::new(), None);
-                        }
+                        self.send_diagnostics(&uri, Vec::new(), None);
                     }
                 }
                 self.sender.refresh_inlay_hints();
                 self.sender.refresh_code_lenses();
             }
             WorkerResult::CellEvaluationComplete { uri, version, diagnostics } => {
-                // eprintln!("Gateway: Received CellEvaluationComplete for {} version {:?}", uri, version);
                 if let Some(doc) = self.document_store.get_mut(&uri) {
                     if doc.version <= version.unwrap_or(0) {
-                        if let Ok(lsp_uri) = lsp_types::Uri::from_str(&uri) {
-                            self.sender.send_diagnostics(lsp_uri, diagnostics, version);
-                        }
+                        self.send_diagnostics(&uri, diagnostics, version);
                     }
                 }
             }
             WorkerResult::EvaluationError { uri, version, diagnostics } => {
                 eprintln!("Gateway: Received EvaluationError for {} version {:?}", uri, version);
-                if let Ok(lsp_uri) = lsp_types::Uri::from_str(&uri) {
-                    self.sender.send_diagnostics(lsp_uri, diagnostics, version);
-                }
+                self.send_diagnostics(&uri, diagnostics, version);
             }
             WorkerResult::RichMedia { id: _, data, request_id } => {
                 let resp = Response::new_ok(request_id, serde_json::json!({ "data": data }));
