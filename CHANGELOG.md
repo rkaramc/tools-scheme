@@ -1,5 +1,21 @@
 # Changelog
 
+## tools-scheme v0.1.4
+
+- chore: bump version to 0.1.4
+- feat(helix): implement Helix editor integration with dual-LSP support (ts-a91)
+- feat(lsp): implement 'Pull' model for rich media (ts-043.7)
+- feat(lsp): implement version-aware messaging to prevent coordinate drift (ts-043.6)
+- feat(lsp): split EvalWorker into EvaluationActor and AnalysisActor (ts-043.13)
+- feat(lsp): implement backoff supervisor for Racket process management (ts-043.4)
+- feat(lsp): add option to disable diagnostics (ts-5v5)
+- refactor(lsp): implement Gateway-owned DocumentStore and eliminate global SharedState (ts-043.3)
+- refactor(lsp): introduce DocumentSnapshot to prevent race conditions in background tasks
+- refactor(lsp): introduce hybrid snapshot model for spatial consistency (ts-043.5)
+- fix(lsp): resolve flaky integration tests and diagnostic debouncing (ts-6vp)
+- fix(lsp): support TOOLS_SCHEME_TMP_DIR for custom temporary artifact locations (ts-1b7)
+- fix(lsp): log unknown REPL commands to session output (ts-ir2)
+- fix(lsp): add output truncation to make-streaming-port (ts-zf8)
 - test(lsp): verify graceful shutdown exit code (Fixes ts-6ne.2.5)
 - feat(vscode): enable file nesting for LSP session files
 
